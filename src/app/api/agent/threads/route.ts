@@ -8,6 +8,7 @@ const DEFAULT_THREAD_CONTEXT = {
   avatar_ids: [],
   positioning_id: null,
   active_swipe_id: null,
+  research_ids: [],
 }
 
 export async function GET(request: NextRequest) {

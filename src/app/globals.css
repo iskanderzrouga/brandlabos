@@ -46,8 +46,13 @@ body {
 
 html,
 body,
-#__next {
+#__next,
+body > div {
   height: 100%;
+}
+
+body > div {
+  min-height: 0;
 }
 
 /* Clean scrollbars */

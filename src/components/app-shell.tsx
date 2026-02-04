@@ -143,15 +143,16 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   const navItems = [
     { label: 'Agent', href: '/studio', icon: <SparkIcon /> },
+    { label: 'Research', href: '/studio/research', icon: <SearchIcon /> },
     { label: 'Swipes', href: '/studio/swipes', icon: <FilmIcon /> },
     { label: 'Library', href: '/studio/library', icon: <LibraryIcon /> },
+    { label: 'Skills', href: '/studio/skills', icon: <WandIcon /> },
   ]
 
   const settingsItems = [
     { label: 'Organizations', href: '/studio/settings/organizations', icon: <OrgIcon /> },
     { label: 'Brands', href: '/studio/settings/brands', icon: <TagIcon /> },
     { label: 'Products', href: '/studio/settings/products', icon: <BoxIcon /> },
-    { label: 'Skills', href: '/studio/skills', icon: <SparkIcon /> },
     { label: 'Users', href: '/admin/users', icon: <UsersIcon /> },
   ]
 
@@ -174,7 +175,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         setContextDrawerExtra,
       }}
     >
-      <div className="h-screen bg-[var(--editor-bg)] text-[var(--editor-ink)] flex">
+      <div className="h-[100dvh] min-h-0 bg-[var(--editor-bg)] text-[var(--editor-ink)] flex">
         {/* Sidebar */}
         <aside
           className={`bg-[var(--editor-rail)] text-[var(--editor-rail-ink)] flex flex-col border-r border-white/10 transition-[width] duration-200 ${
@@ -512,6 +513,43 @@ function LibraryIcon() {
         d="M4 5h4v14H4V5zm6 0h4v14h-4V5zm6 0h4v14h-4V5z"
         stroke="currentColor"
         strokeWidth="1.8"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
+function SearchIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5" aria-hidden="true">
+      <path
+        d="M11 19a8 8 0 100-16 8 8 0 000 16z"
+        stroke="currentColor"
+        strokeWidth="1.8"
+      />
+      <path
+        d="M20 20l-3.5-3.5"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      />
+    </svg>
+  )
+}
+
+function WandIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5" aria-hidden="true">
+      <path
+        d="M5 19l9-9"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      />
+      <path
+        d="M14.5 5.5l.8-2.5.8 2.5 2.5.8-2.5.8-.8 2.5-.8-2.5-2.5-.8 2.5-.8z"
+        stroke="currentColor"
+        strokeWidth="1.5"
         strokeLinejoin="round"
       />
     </svg>

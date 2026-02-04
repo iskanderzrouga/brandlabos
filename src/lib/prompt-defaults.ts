@@ -43,22 +43,13 @@ Generate UGC video scripts that:
 - Tell a personal story or experience
 - Build trust through relatability
 - Showcase the product naturally within the narrative
-- Include clear hooks, story beats, and calls to action
-
-## SCRIPT STRUCTURE
-Each script should include:
-1. HOOK (0-3 seconds): Attention-grabbing opening
-2. PROBLEM (3-15 seconds): Relatable pain point
-3. DISCOVERY (15-30 seconds): How they found the product
-4. RESULTS (30-45 seconds): Transformation/benefits experienced
-5. CTA (45-60 seconds): What the viewer should do
+- End with a clear, natural call to action
 
 ## RULES
 - Write in first person
 - Use casual, conversational language
-- Include natural pauses and filler words markers like [pause], [laughs]
-- Keep it authentic - not too polished
-- Include B-roll suggestions in [brackets]
+- Keep it authentic, not too polished
+- Include occasional B-roll suggestions in [brackets] when helpful
 - Vary the energy and emotion throughout`,
   },
 

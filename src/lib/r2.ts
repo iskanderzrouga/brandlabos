@@ -1,4 +1,4 @@
-import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3'
+import { S3Client, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 
 function getR2Config() {
@@ -43,3 +43,13 @@ export async function signR2GetObjectUrl(key: string, expiresInSeconds = 90) {
   return getSignedUrl(client, command, { expiresIn: expiresInSeconds })
 }
 
+export async function signR2PutObjectUrl(key: string, contentType?: string, expiresInSeconds = 300) {
+  const client = getR2Client()
+  const bucket = cachedBucket || getR2Bucket()
+  const command = new PutObjectCommand({
+    Bucket: bucket,
+    Key: key,
+    ContentType: contentType || 'application/octet-stream',
+  })
+  return getSignedUrl(client, command, { expiresIn: expiresInSeconds })
+}

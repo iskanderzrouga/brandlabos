@@ -10,6 +10,7 @@ type ThreadContext = {
   avatar_ids?: string[]
   positioning_id?: string | null
   active_swipe_id?: string | null
+  research_ids?: string[]
 }
 
 type PromptBlockRow = {
@@ -83,6 +84,7 @@ function buildSystemPrompt(args: {
   avatars: Array<{ id: string; name: string; content: string }>
   positioning?: { name: string; content: string } | null
   swipe?: { id: string; status: string; title?: string | null; summary?: string | null; transcript?: string | null; source_url?: string | null } | null
+  research?: Array<{ id: string; title?: string | null; summary?: string | null; content?: string | null }>
   blocks: Map<string, PromptBlockRow>
 }) {
   const {
@@ -100,7 +102,7 @@ function buildSystemPrompt(args: {
 
   const sections: string[] = []
 
-  sections.push(`# BrandLab Agent\n\nYou are a senior direct-response copywriter and creative strategist.\n\nYou work inside BrandLab Studio. You can use tools to look up saved swipes (Meta ads), and to ingest new Meta Ad Library URLs.\n\nIMPORTANT:\n- If you suggest changing settings (avatars, skill, versions, swipe), ask the user to confirm.\n- When the user asks you to write, output the draft ONLY inside a \`\`\`draft\n...\n\`\`\` code block. Do not repeat the draft outside the block.\n- Default drafts count = ${versions}. If versions > 1, format inside the draft block as:\n  - \"## Version 1\"\n  - \"## Version 2\" ...\n- Keep non-draft chat replies brief (1-3 short bullets or a short sentence). The draft is inserted into a canvas, so keep chat commentary minimal and practical.\n- Keep output concise, skimmable, and human.`)
+  sections.push(`# BrandLab Agent\n\nYou are a senior direct-response copywriter and creative strategist.\n\nYou work inside BrandLab Studio. You can use tools to look up saved swipes (Meta ads), and to ingest new Meta Ad Library URLs.\n\nIMPORTANT:\n- If you suggest changing settings (avatars, skill, versions, swipe), ask the user to confirm.\n- When the user asks you to write, output the draft ONLY inside a \`\`\`draft\n...\n\`\`\` code block. Do not repeat the draft outside the block.\n- Default drafts count = ${versions}. If versions > 1, format inside the draft block as:\n  - \"## Version 1\"\n  - \"## Version 2\" ...\n- Keep non-draft chat replies extremely brief (one short sentence OR 1-2 bullets). The draft is inserted into a canvas, so keep chat commentary minimal and practical.\n- Keep output concise, skimmable, and human.`)
 
   sections.push(`## CURRENT SKILL\n${skill}`)
   if (skillGuidance) sections.push(`## SKILL GUIDANCE\n${skillGuidance}`)
@@ -134,7 +136,25 @@ function buildSystemPrompt(args: {
     sections.push(`## ACTIVE SWIPE\nStatus: ${swipe.status}\nURL: ${swipe.source_url || ''}\nTitle: ${swipe.title || ''}\nSummary: ${swipe.summary || ''}\n\nTranscript:\n${transcript || '(not ready yet)'}\n`)
   }
 
+  if (args.research && args.research.length > 0) {
+    const lines: string[] = []
+    lines.push(`## RESEARCH CONTEXT (${args.research.length})`)
+    for (const item of args.research) {
+      const excerpt = item.content ? item.content.slice(0, 1200) : ''
+      lines.push(`\n### ${item.title || 'Untitled research'}\n${item.summary || ''}\n${excerpt ? `\nExcerpt:\n${excerpt}` : ''}`.trim())
+    }
+    sections.push(lines.join('\n'))
+  }
+
   return sections.join('\n\n---\n\n')
+}
+
+function deriveThreadTitle(message: string) {
+  const clean = message.replace(/\s+/g, ' ').trim()
+  if (!clean) return null
+  const sentence = clean.split(/[.!?\n]/)[0]
+  const clipped = sentence.length > 80 ? sentence.slice(0, 80).trim() : sentence
+  return clipped || null
 }
 
 async function ingestMetaSwipe(args: { productId: string; url: string; userId: string }) {
@@ -216,6 +236,17 @@ export async function POST(request: NextRequest) {
       INSERT INTO agent_messages (thread_id, role, content)
       VALUES (${threadId}, 'user', ${messageText})
     `
+
+    if (!thread.title) {
+      const derived = deriveThreadTitle(messageText)
+      if (derived) {
+        await sql`
+          UPDATE agent_threads
+          SET title = ${derived}, updated_at = NOW()
+          WHERE id = ${threadId}
+        `
+      }
+    }
 
     // Auto-ingest Meta Ad Library URL(s) if present
     const urls = extractMetaAdLibraryUrls(messageText).filter(isMetaAdLibraryUrl)
@@ -300,6 +331,24 @@ export async function POST(request: NextRequest) {
       swipe = rows[0] ?? null
     }
 
+    // Load attached research items if any
+    let research: Array<{ id: string; title?: string | null; summary?: string | null; content?: string | null }> = []
+    const researchIds = Array.isArray(threadContext.research_ids) ? threadContext.research_ids : []
+    if (researchIds.length > 0) {
+      const rows = (await sql`
+        SELECT id, title, summary, content
+        FROM research_items
+        WHERE id = ANY(${researchIds})
+          AND product_id = ${thread.product_id}
+      `) as Array<{ id: string; title?: string | null; summary?: string | null; content?: string | null }>
+      const order = new Map(researchIds.map((id, idx) => [id, idx]))
+      research = (rows || []).sort((a: any, b: any) => {
+        const ai = order.get(a.id) ?? 0
+        const bi = order.get(b.id) ?? 0
+        return ai - bi
+      })
+    }
+
     const blocks = await loadGlobalPromptBlocks()
     const system = buildSystemPrompt({
       skill,
@@ -313,6 +362,7 @@ export async function POST(request: NextRequest) {
       avatars,
       positioning,
       swipe,
+      research,
       blocks,
     })
 

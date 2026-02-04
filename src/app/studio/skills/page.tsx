@@ -20,10 +20,6 @@ type SkillMeta = {
 
 const RULES: SkillMeta[] = [
   { key: 'writing_rules', label: 'Writing Rules', description: 'Global writing style guidelines', type: 'rule' },
-  { key: 'output_format_organic_static', label: 'Output Format: Static Ads', description: 'JSON format for static ads', type: 'rule' },
-  { key: 'output_format_ugc_video_scripts', label: 'Output Format: UGC Scripts', description: 'JSON format for UGC scripts', type: 'rule' },
-  { key: 'output_format_landing_page_copy', label: 'Output Format: Landing Pages', description: 'JSON format for landing pages', type: 'rule' },
-  { key: 'output_format_advertorial_copy', label: 'Output Format: Advertorial', description: 'JSON format for advertorials', type: 'rule' },
 ]
 
 function slugify(value: string) {

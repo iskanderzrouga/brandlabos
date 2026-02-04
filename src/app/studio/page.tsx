@@ -19,6 +19,7 @@ type ThreadContext = {
   avatar_ids?: string[]
   positioning_id?: string | null
   active_swipe_id?: string | null
+  research_ids?: string[]
 }
 
 type SwipeRow = {
@@ -34,6 +35,12 @@ type SwipeRow = {
 
 type AvatarRow = { id: string; name: string; content: string; is_active: boolean }
 type PitchRow = { id: string; name: string; content: string; is_active: boolean }
+type ResearchItemRow = {
+  id: string
+  title?: string | null
+  summary?: string | null
+  status?: string | null
+}
 type SkillOption = { id: string; label: string; description: string; source: 'core' | 'custom' }
 
 function extractDraftBlock(text: string): string | null {
@@ -116,6 +123,14 @@ function deriveDraftTitle(tabs: string[]) {
   return firstLine ? firstLine.slice(0, 80) : 'Untitled draft'
 }
 
+function deriveThreadTitleFromMessage(message: string) {
+  const clean = message.replace(/\s+/g, ' ').trim()
+  if (!clean) return null
+  const sentence = clean.split(/[.!?\n]/)[0].trim()
+  if (!sentence) return null
+  return sentence.slice(0, 80)
+}
+
 function isMetaAdLibraryUrlCandidate(text: string) {
   return /facebook\.com\/ads\/library\//i.test(text)
 }
@@ -162,6 +177,7 @@ export default function GeneratePage() {
   const [skillSuccess, setSkillSuccess] = useState<string | null>(null)
   const [swipes, setSwipes] = useState<SwipeRow[]>([])
   const [activeSwipe, setActiveSwipe] = useState<SwipeRow | null>(null)
+  const [researchItems, setResearchItems] = useState<ResearchItemRow[]>([])
   const [draftVisibility, setDraftVisibility] = useState<Record<string, boolean>>({})
   const [selectionText, setSelectionText] = useState('')
   const [selectionNote, setSelectionNote] = useState('')
@@ -179,6 +195,8 @@ export default function GeneratePage() {
   const avatarIds = Array.isArray(threadContext.avatar_ids) ? threadContext.avatar_ids : []
   const positioningId = threadContext.positioning_id || null
   const activeSwipeId = threadContext.active_swipe_id || null
+  const researchIds = Array.isArray(threadContext.research_ids) ? threadContext.research_ids : []
+  const canvasHasContent = canvasTabs.some((t) => t.trim().length > 0)
 
   const skillOptions = useMemo<SkillOption[]>(() => {
     const core = CONTENT_TYPES.map((ct) => ({
@@ -200,6 +218,12 @@ export default function GeneratePage() {
       return bTime - aTime
     })
   }, [threads])
+
+  const attachedResearch = useMemo(() => {
+    if (researchIds.length === 0) return []
+    const set = new Set(researchIds)
+    return researchItems.filter((item) => set.has(item.id))
+  }, [researchItems, researchIds])
 
   // Keep canvas tab count in sync with versions
   useEffect(() => {
@@ -337,12 +361,13 @@ export default function GeneratePage() {
             avatar_ids: avatarIds,
             positioning_id: positioningId,
             active_swipe_id: activeSwipeId,
+            research_ids: researchIds,
           },
         }),
       })
     }, 450)
     return () => clearTimeout(handle)
-  }, [threadId, skill, versions, avatarIds, positioningId, activeSwipeId])
+  }, [threadId, skill, versions, avatarIds, positioningId, activeSwipeId, researchIds])
 
   // Auto-save draft content
   useEffect(() => {
@@ -384,10 +409,11 @@ export default function GeneratePage() {
         return
       }
 
-      const [aRes, pRes, sRes] = await Promise.all([
+      const [aRes, pRes, sRes, rRes] = await Promise.all([
         fetch(`/api/avatars?product_id=${selectedProduct}`),
         fetch(`/api/pitches?product_id=${selectedProduct}&active_only=true`),
         fetch(`/api/swipes?product_id=${selectedProduct}`),
+        fetch(`/api/research/items?product_id=${selectedProduct}`),
       ])
 
       if (!active) return
@@ -395,10 +421,12 @@ export default function GeneratePage() {
       const a = await aRes.json().catch(() => [])
       const p = await pRes.json().catch(() => [])
       const s = await sRes.json().catch(() => [])
+      const r = await rRes.json().catch(() => [])
 
       setAvatars(Array.isArray(a) ? a : [])
       setPitches(Array.isArray(p) ? p : [])
       setSwipes(Array.isArray(s) ? s : [])
+      setResearchItems(Array.isArray(r) ? r : [])
     }
     run()
     return () => {
@@ -803,6 +831,52 @@ export default function GeneratePage() {
             </div>
           )}
         </div>
+
+        <div>
+          <div className="flex items-center justify-between gap-3 mb-2">
+            <p className="text-[10px] uppercase tracking-[0.28em] text-[var(--editor-ink-muted)]">
+              Research
+            </p>
+            <a
+              href="/studio/research"
+              className="text-[11px] text-[var(--editor-ink-muted)] underline underline-offset-4"
+            >
+              Open
+            </a>
+          </div>
+
+          {attachedResearch.length === 0 ? (
+            <p className="text-xs text-[var(--editor-ink-muted)]">
+              No research attached yet.
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {attachedResearch.map((item) => (
+                <div
+                  key={item.id}
+                  className="flex items-center justify-between gap-2 rounded-2xl border border-[var(--editor-border)] bg-[var(--editor-panel-muted)] px-3 py-2"
+                >
+                  <span className="text-xs text-[var(--editor-ink)] truncate">
+                    {item.title || 'Untitled research'}
+                  </span>
+                  <button
+                    onClick={() =>
+                      setThreadContext((prev) => ({
+                        ...prev,
+                        research_ids: (Array.isArray(prev.research_ids) ? prev.research_ids : []).filter(
+                          (id) => id !== item.id
+                        ),
+                      }))
+                    }
+                    className="text-[11px] text-[var(--editor-ink-muted)] underline underline-offset-4"
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     )
 
@@ -829,6 +903,7 @@ export default function GeneratePage() {
     pitches,
     swipes,
     activeSwipe,
+    attachedResearch,
     saveCustomSkill,
     resetSkillBuilder,
   ])
@@ -879,6 +954,16 @@ export default function GeneratePage() {
     setSelectionQueue([])
     clearSelection()
     setMessages((prev) => [...prev, { role: 'user', content: fullMessage }])
+    if (text) {
+      const derived = deriveThreadTitleFromMessage(text)
+      if (derived) {
+        setThreads((prev) =>
+          prev.map((t) =>
+            t.id === threadId && !t.draft_title && !t.title ? { ...t, title: derived } : t
+          )
+        )
+      }
+    }
 
     try {
       // Refresh swipe list sooner when the user pastes a Meta URL
@@ -906,7 +991,7 @@ export default function GeneratePage() {
       setMessages((prev) => [...prev, { role: 'assistant', content: assistantMessage }])
 
       if (draft && canvasEmpty) {
-        insertDraftIntoCanvas(draft)
+        insertDraftIntoCanvas(draft, 'replace')
       }
       queueMicrotask(() => scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }))
     } catch (err) {
@@ -956,10 +1041,30 @@ export default function GeneratePage() {
     setDraftSavedAt(updatedAt)
   }
 
-  function insertDraftIntoCanvas(draft: string) {
+  function insertDraftIntoCanvas(draft: string, mode: 'replace' | 'append' = 'replace') {
     const split = splitDraftVersions(draft, versions)
-    setCanvasTabs(split)
-    setActiveTab(0)
+    if (mode === 'replace') {
+      setCanvasTabs(split)
+      setActiveTab(0)
+      return
+    }
+
+    setCanvasTabs((prev) => {
+      const next = [...prev]
+      if (versions === 1) {
+        const base = next[activeTab] || ''
+        const addition = split[0] || ''
+        next[activeTab] = [base, addition].filter(Boolean).join('\n\n').trim()
+        return next
+      }
+
+      split.forEach((chunk, idx) => {
+        if (!chunk) return
+        const base = next[idx] || ''
+        next[idx] = [base, chunk].filter(Boolean).join('\n\n').trim()
+      })
+      return next
+    })
   }
 
   function handleCanvasSelect(e: React.SyntheticEvent<HTMLTextAreaElement>) {
@@ -992,7 +1097,7 @@ export default function GeneratePage() {
 
   return (
     <div className="h-full min-h-0 flex flex-col">
-      <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[360px_1fr] gap-5 p-5 overflow-hidden">
+      <div className="flex-1 min-h-0 h-full grid grid-cols-1 lg:grid-cols-[360px_1fr] gap-5 p-5 overflow-hidden">
         {/* Chat */}
         <section className="editor-panel flex flex-col overflow-hidden min-h-0">
           <div className="px-4 py-3 border-b border-[var(--editor-border)] bg-[var(--editor-panel)]/70">
@@ -1061,14 +1166,14 @@ export default function GeneratePage() {
                     <div
                       className={`max-w-[88%] rounded-2xl px-4 py-3 ${
                         isUser
-                          ? 'bg-[#2b2f2d] text-[#f7f6f2]'
+                          ? 'bg-[#353a36] text-[#f5f3ef]'
                           : isTool
                             ? 'bg-[var(--editor-panel-muted)] text-[var(--editor-ink)]'
                             : 'bg-[var(--editor-panel)] text-[var(--editor-ink)]'
                       }`}
                     >
                       {draftParts.before && (
-                        <pre className="whitespace-pre-wrap font-sans text-[13px] leading-5 font-medium">
+                        <pre className="whitespace-pre-wrap font-sans text-[12px] leading-5 font-medium">
                           {draftParts.before}
                         </pre>
                       )}
@@ -1093,20 +1198,28 @@ export default function GeneratePage() {
                           </div>
 
                           {showDraft && (
-                            <pre className="whitespace-pre-wrap font-sans text-[13px] leading-5 font-medium mt-2">
+                            <pre className="whitespace-pre-wrap font-sans text-[12px] leading-5 font-medium mt-2">
                               {draft}
                             </pre>
                           )}
 
                           <div className="mt-3 flex items-center gap-2">
                             <button
-                              onClick={() => insertDraftIntoCanvas(draft)}
+                              onClick={() => insertDraftIntoCanvas(draft, 'append')}
                               className="editor-button-ghost text-xs"
                             >
-                              Insert to Canvas
+                              Insert
                             </button>
+                            {canvasHasContent && (
+                              <button
+                                onClick={() => insertDraftIntoCanvas(draft, 'replace')}
+                                className="editor-button-ghost text-xs"
+                              >
+                                Replace
+                              </button>
+                            )}
                             {versions > 1 && (
-                              <span className="text-xs text-[var(--editor-ink-muted)]">
+                              <span className="text-[11px] text-[var(--editor-ink-muted)]">
                                 Splits by &quot;## Version N&quot;
                               </span>
                             )}
@@ -1115,7 +1228,7 @@ export default function GeneratePage() {
                       )}
 
                       {draftParts.after && (
-                        <pre className="whitespace-pre-wrap font-sans text-[13px] leading-5 font-medium mt-3">
+                        <pre className="whitespace-pre-wrap font-sans text-[12px] leading-5 font-medium mt-3">
                           {draftParts.after}
                         </pre>
                       )}

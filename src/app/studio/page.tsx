@@ -192,10 +192,16 @@ export default function GeneratePage() {
 
   const versions = Math.min(6, Math.max(1, Number(threadContext.versions || 1)))
   const skill = String(threadContext.skill || 'ugc_video_scripts')
-  const avatarIds = Array.isArray(threadContext.avatar_ids) ? threadContext.avatar_ids : []
+  const avatarIds = useMemo(
+    () => (Array.isArray(threadContext.avatar_ids) ? threadContext.avatar_ids : []),
+    [threadContext.avatar_ids]
+  )
   const positioningId = threadContext.positioning_id || null
   const activeSwipeId = threadContext.active_swipe_id || null
-  const researchIds = Array.isArray(threadContext.research_ids) ? threadContext.research_ids : []
+  const researchIds = useMemo(
+    () => (Array.isArray(threadContext.research_ids) ? threadContext.research_ids : []),
+    [threadContext.research_ids]
+  )
   const canvasHasContent = canvasTabs.some((t) => t.trim().length > 0)
 
   const skillOptions = useMemo<SkillOption[]>(() => {

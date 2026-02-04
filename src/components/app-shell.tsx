@@ -178,7 +178,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       <div className="h-[100dvh] min-h-0 bg-[var(--editor-bg)] text-[var(--editor-ink)] flex">
         {/* Sidebar */}
         <aside
-          className={`bg-[var(--editor-rail)] text-[var(--editor-rail-ink)] flex flex-col border-r border-white/10 transition-[width] duration-200 ${
+          className={`relative z-30 bg-[var(--editor-rail)] text-[var(--editor-rail-ink)] flex flex-col border-r border-white/10 transition-[width] duration-200 ${
             sidebarCollapsed ? 'w-[78px]' : 'w-64'
           }`}
         >
@@ -315,7 +315,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         </aside>
 
         {/* Main Content */}
-        <div className="flex-1 flex flex-col min-h-0">
+        <div className="relative z-10 flex-1 flex flex-col min-h-0">
           {/* Top Bar */}
           <header className="h-16 border-b border-[var(--editor-border)] bg-[var(--editor-panel)]/70 backdrop-blur flex items-center px-6 gap-4">
             <button

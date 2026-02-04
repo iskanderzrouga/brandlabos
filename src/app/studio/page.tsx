@@ -42,6 +42,14 @@ function extractDraftBlock(text: string): string | null {
   return match[1].trim()
 }
 
+function splitDraftMessage(text: string): { before: string; draft: string | null; after: string } {
+  const match = text.match(/```draft\s*([\s\S]*?)\s*```/i)
+  if (!match || match.index == null) return { before: text.trim(), draft: null, after: '' }
+  const before = text.slice(0, match.index).trim()
+  const after = text.slice(match.index + match[0].length).trim()
+  return { before, draft: match[1].trim(), after }
+}
+
 function splitDraftVersions(draft: string, versions: number): string[] {
   const out = Array.from({ length: versions }, () => '')
   const re = /^##\s*Version\s*(\d+)\s*$/gim
@@ -112,6 +120,10 @@ export default function GeneratePage() {
   const [skillSuccess, setSkillSuccess] = useState<string | null>(null)
   const [swipes, setSwipes] = useState<SwipeRow[]>([])
   const [activeSwipe, setActiveSwipe] = useState<SwipeRow | null>(null)
+  const [draftVisibility, setDraftVisibility] = useState<Record<string, boolean>>({})
+  const [selectionText, setSelectionText] = useState('')
+  const [selectionNote, setSelectionNote] = useState('')
+  const [selectionQueue, setSelectionQueue] = useState<Array<{ id: string; text: string; note: string }>>([])
 
   // Editor
   const [activeTab, setActiveTab] = useState(0)
@@ -325,6 +337,63 @@ export default function GeneratePage() {
       if (timer) clearTimeout(timer)
     }
   }, [activeSwipeId])
+
+  const resetSkillBuilder = useCallback(() => {
+    setSkillName('')
+    setSkillDescription('')
+    setSkillGuidance('')
+    setSkillError(null)
+    setSkillSuccess(null)
+  }, [])
+
+  const saveCustomSkill = useCallback(async () => {
+    const name = skillName.trim()
+    const guidance = skillGuidance.trim()
+    if (!name || !guidance) {
+      setSkillError('Add a name and guidance for the skill.')
+      return
+    }
+
+    const key = makeSkillKey(name)
+    setSkillSaving(true)
+    setSkillError(null)
+    setSkillSuccess(null)
+
+    try {
+      const res = await fetch('/api/prompt-blocks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name,
+          type: 'feature_template',
+          scope: 'global',
+          content: guidance,
+          metadata: {
+            key,
+            label: name,
+            description: skillDescription.trim() || 'Custom skill',
+            origin: 'custom',
+          },
+        }),
+      })
+
+      const data = await res.json()
+      if (!res.ok) {
+        throw new Error(data?.error || 'Failed to save skill')
+      }
+
+      await refreshSkills()
+      setThreadContext((prev) => ({ ...prev, skill: key }))
+      setSkillSuccess('Skill saved.')
+      setSkillBuilderOpen(false)
+      resetSkillBuilder()
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to save skill'
+      setSkillError(msg)
+    } finally {
+      setSkillSaving(false)
+    }
+  }, [skillName, skillGuidance, skillDescription, refreshSkills, resetSkillBuilder])
 
   // Register Generate-specific controls inside the global Context drawer
   useEffect(() => {
@@ -637,71 +706,52 @@ export default function GeneratePage() {
     resetSkillBuilder,
   ])
 
-  function resetSkillBuilder() {
-    setSkillName('')
-    setSkillDescription('')
-    setSkillGuidance('')
-    setSkillError(null)
-    setSkillSuccess(null)
+  function clearSelection() {
+    setSelectionText('')
+    setSelectionNote('')
   }
 
-  async function saveCustomSkill() {
-    const name = skillName.trim()
-    const guidance = skillGuidance.trim()
-    if (!name || !guidance) {
-      setSkillError('Add a name and guidance for the skill.')
-      return
-    }
+  function queueSelectionNote() {
+    const note = selectionNote.trim()
+    const text = selectionText.trim()
+    if (!text || !note) return
+    setSelectionQueue((prev) => [
+      ...prev,
+      { id: `${Date.now()}-${prev.length}`, text, note },
+    ])
+    clearSelection()
+  }
 
-    const key = makeSkillKey(name)
-    setSkillSaving(true)
-    setSkillError(null)
-    setSkillSuccess(null)
-
-    try {
-      const res = await fetch('/api/prompt-blocks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name,
-          type: 'feature_template',
-          scope: 'global',
-          content: guidance,
-          metadata: {
-            key,
-            label: name,
-            description: skillDescription.trim() || 'Custom skill',
-            origin: 'custom',
-          },
-        }),
-      })
-
-      const data = await res.json()
-      if (!res.ok) {
-        throw new Error(data?.error || 'Failed to save skill')
-      }
-
-      await refreshSkills()
-      setThreadContext((prev) => ({ ...prev, skill: key }))
-      setSkillSuccess('Skill saved.')
-      setSkillBuilderOpen(false)
-      resetSkillBuilder()
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to save skill'
-      setSkillError(msg)
-    } finally {
-      setSkillSaving(false)
-    }
+  function removeSelectionNote(id: string) {
+    setSelectionQueue((prev) => prev.filter((item) => item.id !== id))
   }
 
   async function sendMessage() {
     if (!threadId || sending) return
     const text = composer.trim()
-    if (!text) return
+    const hasQueuedNotes = selectionQueue.length > 0
+    if (!text && !hasQueuedNotes) return
+
+    const notePayload = hasQueuedNotes
+      ? selectionQueue
+          .map((item, idx) => {
+            return `Selection ${idx + 1}:\nText:\n${item.text}\nComment:\n${item.note}`
+          })
+          .join('\n\n')
+      : ''
+
+    const fullMessage = [
+      text,
+      notePayload ? '---\nEdit notes based on selected text:\n' + notePayload : '',
+    ]
+      .filter(Boolean)
+      .join('\n\n')
 
     setSending(true)
     setComposer('')
-    setMessages((prev) => [...prev, { role: 'user', content: text }])
+    setSelectionQueue([])
+    clearSelection()
+    setMessages((prev) => [...prev, { role: 'user', content: fullMessage }])
 
     try {
       // Refresh swipe list sooner when the user pastes a Meta URL
@@ -715,7 +765,7 @@ export default function GeneratePage() {
       const res = await fetch('/api/agent/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ thread_id: threadId, message: text }),
+        body: JSON.stringify({ thread_id: threadId, message: fullMessage }),
       })
 
       const data = await res.json()
@@ -746,6 +796,18 @@ export default function GeneratePage() {
     setActiveTab(0)
   }
 
+  function handleCanvasSelect(e: React.SyntheticEvent<HTMLTextAreaElement>) {
+    const target = e.currentTarget
+    const start = target.selectionStart || 0
+    const end = target.selectionEnd || 0
+    if (start === end) {
+      setSelectionText('')
+      return
+    }
+    const text = target.value.slice(start, end).trim()
+    setSelectionText(text)
+  }
+
   if (!selectedProduct) {
     return (
       <div className="h-full flex items-center justify-center p-10">
@@ -764,9 +826,9 @@ export default function GeneratePage() {
 
   return (
     <div className="h-full flex flex-col">
-      <div className="flex-1 grid grid-cols-1 lg:grid-cols-[360px_1fr] gap-5 p-5 overflow-hidden">
+      <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[360px_1fr] gap-5 p-5 overflow-hidden">
         {/* Chat */}
-        <section className="editor-panel flex flex-col overflow-hidden">
+        <section className="editor-panel flex flex-col overflow-hidden min-h-0">
           <div className="px-4 py-3 border-b border-[var(--editor-border)] bg-[var(--editor-panel)]/70">
             <div className="flex items-center justify-between gap-4">
               <div className="flex items-center gap-2">
@@ -828,36 +890,73 @@ export default function GeneratePage() {
               messages.map((m, idx) => {
                 const isUser = m.role === 'user'
                 const isTool = m.role === 'tool'
-                const draft = m.role === 'assistant' ? extractDraftBlock(m.content) : null
+                const messageKey = m.id || `${idx}`
+                const draftParts = m.role === 'assistant' ? splitDraftMessage(m.content) : { before: m.content, draft: null, after: '' }
+                const draft = draftParts.draft
+                const showDraft = Boolean(draft) && Boolean(draftVisibility[messageKey])
+
                 return (
-                  <div key={m.id || idx} className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+                  <div key={messageKey} className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
                     <div
-                      className={`max-w-[88%] rounded-2xl border px-4 py-3 ${
+                      className={`max-w-[88%] rounded-2xl px-4 py-3 ${
                         isUser
-                          ? 'bg-[rgba(18,33,30,0.92)] text-[var(--editor-rail-ink)] border-[rgba(18,33,30,0.92)]'
+                          ? 'bg-[#2b2f2d] text-[#f7f6f2]'
                           : isTool
-                            ? 'bg-[var(--editor-panel-muted)] text-[var(--editor-ink)] border-[var(--editor-border)]'
-                            : 'bg-[var(--editor-panel)] text-[var(--editor-ink)] border-[var(--editor-border)]'
+                            ? 'bg-[var(--editor-panel-muted)] text-[var(--editor-ink)]'
+                            : 'bg-[var(--editor-panel)] text-[var(--editor-ink)]'
                       }`}
                     >
-                      <pre className="whitespace-pre-wrap font-sans text-[13px] leading-5 font-medium">
-                        {m.content}
-                      </pre>
+                      {draftParts.before && (
+                        <pre className="whitespace-pre-wrap font-sans text-[13px] leading-5 font-medium">
+                          {draftParts.before}
+                        </pre>
+                      )}
 
                       {draft && (
-                        <div className="mt-3 flex items-center gap-2">
-                          <button
-                            onClick={() => insertDraftIntoCanvas(draft)}
-                            className="editor-button-ghost text-xs"
-                          >
-                            Insert to Canvas
-                          </button>
-                          {versions > 1 && (
-                            <span className="text-xs text-[var(--editor-ink-muted)]">
-                              Splits by &quot;## Version N&quot;
-                            </span>
+                        <div className="mt-3 rounded-2xl bg-[var(--editor-panel-muted)] p-3">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="text-[11px] font-semibold text-[var(--editor-ink)]">
+                              Draft captured
+                            </div>
+                            <button
+                              onClick={() =>
+                                setDraftVisibility((prev) => ({
+                                  ...prev,
+                                  [messageKey]: !prev[messageKey],
+                                }))
+                              }
+                              className="text-[11px] text-[var(--editor-ink-muted)] underline underline-offset-4"
+                            >
+                              {showDraft ? 'Hide' : 'View'}
+                            </button>
+                          </div>
+
+                          {showDraft && (
+                            <pre className="whitespace-pre-wrap font-sans text-[13px] leading-5 font-medium mt-2">
+                              {draft}
+                            </pre>
                           )}
+
+                          <div className="mt-3 flex items-center gap-2">
+                            <button
+                              onClick={() => insertDraftIntoCanvas(draft)}
+                              className="editor-button-ghost text-xs"
+                            >
+                              Insert to Canvas
+                            </button>
+                            {versions > 1 && (
+                              <span className="text-xs text-[var(--editor-ink-muted)]">
+                                Splits by &quot;## Version N&quot;
+                              </span>
+                            )}
+                          </div>
                         </div>
+                      )}
+
+                      {draftParts.after && (
+                        <pre className="whitespace-pre-wrap font-sans text-[13px] leading-5 font-medium mt-3">
+                          {draftParts.after}
+                        </pre>
                       )}
                     </div>
                   </div>
@@ -875,21 +974,89 @@ export default function GeneratePage() {
               className="flex items-end gap-3"
             >
               <div className="flex-1">
+                {selectionText && (
+                  <div className="mb-3 rounded-2xl border border-[var(--editor-border)] bg-[var(--editor-panel-muted)] p-3 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-semibold text-[var(--editor-ink)]">
+                        Selected text
+                      </span>
+                      <button
+                        type="button"
+                        onClick={clearSelection}
+                        className="text-[11px] text-[var(--editor-ink-muted)] underline underline-offset-4"
+                      >
+                        Clear
+                      </button>
+                    </div>
+                    <div className="text-[12px] text-[var(--editor-ink)] leading-5 max-h-20 overflow-auto whitespace-pre-wrap">
+                      {selectionText}
+                    </div>
+                    <input
+                      value={selectionNote}
+                      onChange={(e) => setSelectionNote(e.target.value)}
+                      placeholder="Add a note about what to change..."
+                      className="editor-input w-full text-[12px]"
+                    />
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={queueSelectionNote}
+                        className="editor-button-ghost text-[11px]"
+                      >
+                        Queue note
+                      </button>
+                      <span className="text-[10px] text-[var(--editor-ink-muted)]">
+                        Notes are sent with your next message.
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {selectionQueue.length > 0 && (
+                  <div className="mb-3 space-y-2">
+                    <p className="text-[11px] uppercase tracking-[0.2em] text-[var(--editor-ink-muted)]">
+                      Queued edits
+                    </p>
+                    {selectionQueue.map((item) => (
+                      <div
+                        key={item.id}
+                        className="rounded-2xl border border-[var(--editor-border)] bg-[var(--editor-panel-muted)] p-3"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[11px] font-semibold text-[var(--editor-ink)]">
+                            Selection
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => removeSelectionNote(item.id)}
+                            className="text-[11px] text-[var(--editor-ink-muted)] underline underline-offset-4"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                        <div className="text-[12px] text-[var(--editor-ink)] leading-5 mt-2 max-h-16 overflow-auto whitespace-pre-wrap">
+                          {item.text}
+                        </div>
+                        <div className="text-[12px] text-[var(--editor-ink-muted)] leading-5 mt-2 whitespace-pre-wrap">
+                          Note: {item.note}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
                 <textarea
                   value={composer}
                   onChange={(e) => setComposer(e.target.value)}
-                  placeholder="Paste a Meta Ad Library URL, or tell me what to write..."
+                  placeholder="Message the agent..."
                   rows={2}
                   className="editor-input w-full text-[13px] leading-5 resize-none"
                 />
-                <p className="text-[10px] text-[var(--editor-ink-muted)] mt-2">
-                  Tip: start with &quot;Write 1 UGC script from this swipe, then 5 hook variations.&quot;
-                </p>
               </div>
               <button
                 type="submit"
                 className="editor-button"
-                disabled={!threadId || sending || !composer.trim()}
+                disabled={!threadId || sending || (!composer.trim() && selectionQueue.length === 0)}
               >
                 {sending ? 'Sending...' : 'Send'}
               </button>
@@ -898,7 +1065,7 @@ export default function GeneratePage() {
         </section>
 
         {/* Draft Canvas */}
-        <section className="editor-panel flex flex-col overflow-hidden">
+        <section className="editor-panel flex flex-col overflow-hidden min-h-0">
           <div className="px-5 py-3 border-b border-[var(--editor-border)] flex items-center justify-between gap-4">
             <div>
               <p className="text-[10px] uppercase tracking-[0.28em] text-[var(--editor-ink-muted)]">
@@ -937,6 +1104,8 @@ export default function GeneratePage() {
                   return next
                 })
               }}
+              onSelect={handleCanvasSelect}
+              onMouseUp={handleCanvasSelect}
               placeholder="Your draft lives here. Ask the agent for a draft, then insert it."
               className="w-full h-full min-h-[520px] p-5 rounded-2xl border border-[var(--editor-border)] bg-[var(--editor-panel)] text-[15px] leading-7 text-[var(--editor-ink)] focus:outline-none focus:ring-2 focus:ring-[var(--editor-accent)] resize-none"
             />

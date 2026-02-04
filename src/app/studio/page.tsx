@@ -182,6 +182,8 @@ export default function GeneratePage() {
   const [selectionText, setSelectionText] = useState('')
   const [selectionNote, setSelectionNote] = useState('')
   const [selectionQueue, setSelectionQueue] = useState<Array<{ id: string; text: string; note: string }>>([])
+  const [activeSelectionId, setActiveSelectionId] = useState<string | null>(null)
+  const [queueExpanded, setQueueExpanded] = useState<Record<string, boolean>>({})
 
   // Editor
   const [activeTab, setActiveTab] = useState(0)
@@ -203,6 +205,9 @@ export default function GeneratePage() {
     [threadContext.research_ids]
   )
   const canvasHasContent = canvasTabs.some((t) => t.trim().length > 0)
+  const hasQueuedNotes = selectionQueue.some(
+    (item) => item.text.trim().length > 0 && item.note.trim().length > 0
+  )
 
   const skillOptions = useMemo<SkillOption[]>(() => {
     const core = CONTENT_TYPES.map((ct) => ({
@@ -311,6 +316,7 @@ export default function GeneratePage() {
       setMessages([])
       setCanvasTabs([''])
       setActiveTab(0)
+      setDraftSavedAt(null)
       if (!selectedProduct) return
 
       setThreadsLoading(true)
@@ -332,11 +338,9 @@ export default function GeneratePage() {
         return
       }
 
-      const seedContext = threadsList[0]?.context || null
-      const newThread = await createThread(seedContext)
-      if (!active || !newThread) return
-      setThreads((prev) => [newThread, ...prev])
-      await loadThreadById(newThread.id)
+      if (threadsList.length > 0) {
+        await loadThreadById(threadsList[0].id)
+      }
     }
     run()
     return () => {
@@ -915,33 +919,81 @@ export default function GeneratePage() {
   ])
 
   function clearSelection() {
+    if (activeSelectionId) {
+      setSelectionQueue((prev) => {
+        const current = prev.find((item) => item.id === activeSelectionId)
+        if (current && !current.note.trim()) {
+          return prev.filter((item) => item.id !== activeSelectionId)
+        }
+        return prev
+      })
+    }
     setSelectionText('')
     setSelectionNote('')
-  }
-
-  function queueSelectionNote() {
-    const note = selectionNote.trim()
-    const text = selectionText.trim()
-    if (!text || !note) return
-    setSelectionQueue((prev) => [
-      ...prev,
-      { id: `${Date.now()}-${prev.length}`, text, note },
-    ])
-    clearSelection()
+    setActiveSelectionId(null)
   }
 
   function removeSelectionNote(id: string) {
     setSelectionQueue((prev) => prev.filter((item) => item.id !== id))
+    setQueueExpanded((prev) => {
+      const next = { ...prev }
+      delete next[id]
+      return next
+    })
+    if (activeSelectionId === id) {
+      setActiveSelectionId(null)
+      setSelectionNote('')
+    }
+  }
+
+  function toggleQueueItem(id: string) {
+    setQueueExpanded((prev) => ({ ...prev, [id]: !prev[id] }))
+  }
+
+  function updateQueuedNote(id: string, note: string) {
+    setSelectionQueue((prev) =>
+      prev.map((item) => (item.id === id ? { ...item, note } : item))
+    )
+    if (activeSelectionId === id) {
+      setSelectionNote(note)
+    }
+  }
+
+  function handleSelectionNoteChange(value: string) {
+    setSelectionNote(value)
+    const text = selectionText.trim()
+    if (!text) return
+
+    if (!activeSelectionId) {
+      if (!value.trim()) return
+      const id = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+      setActiveSelectionId(id)
+      setSelectionQueue((prev) => [...prev, { id, text, note: value }])
+      return
+    }
+
+    setSelectionQueue((prev) => {
+      const exists = prev.some((item) => item.id === activeSelectionId)
+      if (!exists && value.trim()) {
+        return [...prev, { id: activeSelectionId, text, note: value }]
+      }
+      return prev.map((item) =>
+        item.id === activeSelectionId ? { ...item, text, note: value } : item
+      )
+    })
   }
 
   async function sendMessage() {
     if (!threadId || sending) return
     const text = composer.trim()
-    const hasQueuedNotes = selectionQueue.length > 0
+    const queuedNotes = selectionQueue.filter(
+      (item) => item.text.trim().length > 0 && item.note.trim().length > 0
+    )
+    const hasQueuedNotes = queuedNotes.length > 0
     if (!text && !hasQueuedNotes) return
 
     const notePayload = hasQueuedNotes
-      ? selectionQueue
+      ? queuedNotes
           .map((item, idx) => {
             return `Selection ${idx + 1}:\nText:\n${item.text}\nComment:\n${item.note}`
           })
@@ -958,6 +1010,8 @@ export default function GeneratePage() {
     setSending(true)
     setComposer('')
     setSelectionQueue([])
+    setQueueExpanded({})
+    setActiveSelectionId(null)
     clearSelection()
     setMessages((prev) => [...prev, { role: 'user', content: fullMessage }])
     if (text) {
@@ -1015,6 +1069,47 @@ export default function GeneratePage() {
     if (!newThread) return
     setThreads((prev) => [newThread, ...prev])
     await loadThreadById(newThread.id)
+  }
+
+  async function handleDeleteThread(id: string) {
+    if (!id) return
+    if (!confirm('Delete this asset? This cannot be undone.')) return
+
+    const res = await fetch(`/api/agent/threads/${id}`, { method: 'DELETE' })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      alert(data?.error || 'Failed to delete asset')
+      return
+    }
+
+    const nextThreads = threads.filter((t) => t.id !== id)
+    setThreads(nextThreads)
+
+    if (id === threadId) {
+      if (storageKey) {
+        localStorage.removeItem(storageKey)
+      }
+      const params = new URLSearchParams(window.location.search)
+      params.delete('thread')
+      window.history.replaceState(null, '', `/studio?${params.toString()}`)
+
+      if (nextThreads[0]) {
+        await loadThreadById(nextThreads[0].id)
+      } else {
+        setThreadId(null)
+        setThreadContext({})
+        setMessages([])
+        setCanvasTabs([''])
+        setActiveTab(0)
+        setDraftSavedAt(null)
+        setComposer('')
+        setSelectionText('')
+        setSelectionNote('')
+        setSelectionQueue([])
+        setActiveSelectionId(null)
+        setQueueExpanded({})
+      }
+    }
   }
 
   async function handleSelectThread(id: string) {
@@ -1079,9 +1174,21 @@ export default function GeneratePage() {
     const end = target.selectionEnd || 0
     if (start === end) {
       setSelectionText('')
+      setSelectionNote('')
+      setActiveSelectionId(null)
       return
     }
     const text = target.value.slice(start, end).trim()
+    if (!text) {
+      setSelectionText('')
+      setSelectionNote('')
+      setActiveSelectionId(null)
+      return
+    }
+    if (text !== selectionText) {
+      setSelectionNote('')
+      setActiveSelectionId(null)
+    }
     setSelectionText(text)
   }
 
@@ -1108,9 +1215,19 @@ export default function GeneratePage() {
         <section className="editor-panel flex flex-col overflow-hidden min-h-0">
           <div className="px-4 py-3 border-b border-[var(--editor-border)] bg-[var(--editor-panel)]/70">
             <div className="flex items-center justify-between gap-3">
-              <button onClick={handleNewAsset} className="editor-button-ghost text-xs">
-                New Asset
-              </button>
+              <div className="flex items-center gap-2">
+                <button onClick={handleNewAsset} className="editor-button-ghost text-xs">
+                  New Asset
+                </button>
+                {threadId && (
+                  <button
+                    onClick={() => handleDeleteThread(threadId)}
+                    className="editor-button-ghost text-xs text-red-300"
+                  >
+                    Delete
+                  </button>
+                )}
+              </div>
               {activeSwipe && activeSwipe.status !== 'ready' && (
                 <span className="chat-chip chat-chip--muted">
                   Swipe {activeSwipe.status === 'failed' ? 'Failed' : 'Transcribing'}
@@ -1157,191 +1274,231 @@ export default function GeneratePage() {
             </div>
           </div>
 
-          <div ref={scrollRef} className="flex-1 overflow-auto p-4 space-y-3">
-            {messages.length === 0 ? null : (
-              messages.map((m, idx) => {
-                const isUser = m.role === 'user'
-                const isTool = m.role === 'tool'
-                const messageKey = m.id || `${idx}`
-                const draftParts = m.role === 'assistant' ? splitDraftMessage(m.content) : { before: m.content, draft: null, after: '' }
-                const draft = draftParts.draft
-                const showDraft = Boolean(draft) && Boolean(draftVisibility[messageKey])
+          {!threadId ? (
+            <div className="flex-1 p-6 flex flex-col items-center justify-center text-center gap-3">
+              <p className="font-medium text-[var(--editor-ink)]">No assets yet.</p>
+              <p className="text-sm text-[var(--editor-ink-muted)] max-w-sm">
+                Create your first asset to start chatting with the agent and saving drafts.
+              </p>
+              <button onClick={handleNewAsset} className="editor-button">
+                Create New Asset
+              </button>
+            </div>
+          ) : (
+            <>
+              <div ref={scrollRef} className="flex-1 overflow-auto p-4 space-y-3">
+                {messages.length === 0 ? null : (
+                  messages.map((m, idx) => {
+                    const isUser = m.role === 'user'
+                    const isTool = m.role === 'tool'
+                    const messageKey = m.id || `${idx}`
+                    const draftParts = m.role === 'assistant' ? splitDraftMessage(m.content) : { before: m.content, draft: null, after: '' }
+                    const draft = draftParts.draft
+                    const showDraft = Boolean(draft) && Boolean(draftVisibility[messageKey])
 
-                return (
-                  <div key={messageKey} className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-                    <div
-                      className={`max-w-[88%] rounded-2xl px-4 py-3 ${
-                        isUser
-                          ? 'bg-[#353a36] text-[#f5f3ef]'
-                          : isTool
-                            ? 'bg-[var(--editor-panel-muted)] text-[var(--editor-ink)]'
-                            : 'bg-[var(--editor-panel)] text-[var(--editor-ink)]'
-                      }`}
-                    >
-                      {draftParts.before && (
-                        <pre className="whitespace-pre-wrap font-sans text-[12px] leading-5 font-medium">
-                          {draftParts.before}
-                        </pre>
-                      )}
-
-                      {draft && (
-                        <div className="mt-3 rounded-2xl bg-[var(--editor-panel-muted)] p-3">
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="text-[11px] font-semibold text-[var(--editor-ink)]">
-                              Draft captured
-                            </div>
-                            <button
-                              onClick={() =>
-                                setDraftVisibility((prev) => ({
-                                  ...prev,
-                                  [messageKey]: !prev[messageKey],
-                                }))
-                              }
-                              className="text-[11px] text-[var(--editor-ink-muted)] underline underline-offset-4"
-                            >
-                              {showDraft ? 'Hide' : 'View'}
-                            </button>
-                          </div>
-
-                          {showDraft && (
-                            <pre className="whitespace-pre-wrap font-sans text-[12px] leading-5 font-medium mt-2">
-                              {draft}
+                    return (
+                      <div key={messageKey} className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+                        <div
+                          className={`max-w-[88%] rounded-2xl px-4 py-3 ${
+                            isUser
+                              ? 'bg-[#353a36] text-[#f5f3ef]'
+                              : isTool
+                                ? 'bg-[var(--editor-panel-muted)] text-[var(--editor-ink)]'
+                                : 'bg-[var(--editor-panel)] text-[var(--editor-ink)]'
+                          }`}
+                        >
+                          {draftParts.before && (
+                            <pre className="whitespace-pre-wrap font-sans text-[12px] leading-5 font-medium">
+                              {draftParts.before}
                             </pre>
                           )}
 
-                          <div className="mt-3 flex items-center gap-2">
-                            <button
-                              onClick={() => insertDraftIntoCanvas(draft, 'append')}
-                              className="editor-button-ghost text-xs"
-                            >
-                              Insert
-                            </button>
-                            {canvasHasContent && (
-                              <button
-                                onClick={() => insertDraftIntoCanvas(draft, 'replace')}
-                                className="editor-button-ghost text-xs"
-                              >
-                                Replace
-                              </button>
-                            )}
-                            {versions > 1 && (
-                              <span className="text-[11px] text-[var(--editor-ink-muted)]">
-                                Splits by &quot;## Version N&quot;
-                              </span>
-                            )}
-                          </div>
+                          {draft && (
+                            <div className="mt-3 rounded-2xl bg-[var(--editor-panel-muted)] p-3">
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="text-[11px] font-semibold text-[var(--editor-ink)]">
+                                  Draft captured
+                                </div>
+                                <button
+                                  onClick={() =>
+                                    setDraftVisibility((prev) => ({
+                                      ...prev,
+                                      [messageKey]: !prev[messageKey],
+                                    }))
+                                  }
+                                  className="text-[11px] text-[var(--editor-ink-muted)] underline underline-offset-4"
+                                >
+                                  {showDraft ? 'Hide' : 'View'}
+                                </button>
+                              </div>
+
+                              {showDraft && (
+                                <pre className="whitespace-pre-wrap font-sans text-[12px] leading-5 font-medium mt-2">
+                                  {draft}
+                                </pre>
+                              )}
+
+                              <div className="mt-3 flex items-center gap-2">
+                                <button
+                                  onClick={() => insertDraftIntoCanvas(draft, 'append')}
+                                  className="editor-button-ghost text-xs"
+                                >
+                                  Insert
+                                </button>
+                                {canvasHasContent && (
+                                  <button
+                                    onClick={() => insertDraftIntoCanvas(draft, 'replace')}
+                                    className="editor-button-ghost text-xs"
+                                  >
+                                    Replace
+                                  </button>
+                                )}
+                                {versions > 1 && (
+                                  <span className="text-[11px] text-[var(--editor-ink-muted)]">
+                                    Splits by &quot;## Version N&quot;
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          )}
+
+                          {draftParts.after && (
+                            <pre className="whitespace-pre-wrap font-sans text-[12px] leading-5 font-medium mt-3">
+                              {draftParts.after}
+                            </pre>
+                          )}
                         </div>
-                      )}
-
-                      {draftParts.after && (
-                        <pre className="whitespace-pre-wrap font-sans text-[12px] leading-5 font-medium mt-3">
-                          {draftParts.after}
-                        </pre>
-                      )}
-                    </div>
-                  </div>
-                )
-              })
-            )}
-          </div>
-
-          <div className="p-4 border-t border-[var(--editor-border)] bg-[var(--editor-panel)]/70">
-            <form
-              onSubmit={(e) => {
-                e.preventDefault()
-                sendMessage()
-              }}
-              className="flex items-end gap-3"
-            >
-              <div className="flex-1">
-                {selectionText && (
-                  <div className="mb-3 rounded-2xl border border-[var(--editor-border)] bg-[var(--editor-panel-muted)] p-3 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-[11px] font-semibold text-[var(--editor-ink)]">
-                        Selected text
-                      </span>
-                      <button
-                        type="button"
-                        onClick={clearSelection}
-                        className="text-[11px] text-[var(--editor-ink-muted)] underline underline-offset-4"
-                      >
-                        Clear
-                      </button>
-                    </div>
-                    <div className="text-[12px] text-[var(--editor-ink)] leading-5 max-h-20 overflow-auto whitespace-pre-wrap">
-                      {selectionText}
-                    </div>
-                    <input
-                      value={selectionNote}
-                      onChange={(e) => setSelectionNote(e.target.value)}
-                      placeholder="Add a note about what to change..."
-                      className="editor-input w-full text-[12px]"
-                    />
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={queueSelectionNote}
-                        className="editor-button-ghost text-[11px]"
-                      >
-                        Queue note
-                      </button>
-                      <span className="text-[10px] text-[var(--editor-ink-muted)]">
-                        Notes are sent with your next message.
-                      </span>
-                    </div>
-                  </div>
+                      </div>
+                    )
+                  })
                 )}
+              </div>
 
-                {selectionQueue.length > 0 && (
-                  <div className="mb-3 space-y-2">
-                    <p className="text-[11px] uppercase tracking-[0.2em] text-[var(--editor-ink-muted)]">
-                      Queued edits
-                    </p>
-                    {selectionQueue.map((item) => (
-                      <div
-                        key={item.id}
-                        className="rounded-2xl border border-[var(--editor-border)] bg-[var(--editor-panel-muted)] p-3"
-                      >
-                        <div className="flex items-center justify-between gap-2">
+              <div className="p-4 border-t border-[var(--editor-border)] bg-[var(--editor-panel)]/70">
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault()
+                    sendMessage()
+                  }}
+                  className="flex items-end gap-3"
+                >
+                  <div className="flex-1">
+                    {selectionText && (
+                      <div className="mb-3 rounded-2xl border border-[var(--editor-border)] bg-[var(--editor-panel-muted)] p-3 space-y-2">
+                        <div className="flex items-center justify-between">
                           <span className="text-[11px] font-semibold text-[var(--editor-ink)]">
-                            Selection
+                            Selected text
                           </span>
                           <button
                             type="button"
-                            onClick={() => removeSelectionNote(item.id)}
+                            onClick={clearSelection}
                             className="text-[11px] text-[var(--editor-ink-muted)] underline underline-offset-4"
                           >
-                            Remove
+                            Clear
                           </button>
                         </div>
-                        <div className="text-[12px] text-[var(--editor-ink)] leading-5 mt-2 max-h-16 overflow-auto whitespace-pre-wrap">
-                          {item.text}
+                        <div className="text-[12px] text-[var(--editor-ink)] leading-5 max-h-20 overflow-auto whitespace-pre-wrap">
+                          {selectionText}
                         </div>
-                        <div className="text-[12px] text-[var(--editor-ink-muted)] leading-5 mt-2 whitespace-pre-wrap">
-                          Note: {item.note}
+                        <textarea
+                          value={selectionNote}
+                          onChange={(e) => handleSelectionNoteChange(e.target.value)}
+                          placeholder="Add a note about what to change..."
+                          rows={2}
+                          className="editor-input w-full text-[12px] leading-5 resize-none"
+                        />
+                        <span className="text-[10px] text-[var(--editor-ink-muted)]">
+                          Autosaved to queued edits.
+                        </span>
+                      </div>
+                    )}
+
+                    {selectionQueue.length > 0 && (
+                      <div className="mb-3">
+                        <p className="text-[11px] uppercase tracking-[0.2em] text-[var(--editor-ink-muted)]">
+                          Queued edits ({selectionQueue.length})
+                        </p>
+                        <div className="mt-2 space-y-2 max-h-44 overflow-auto pr-1">
+                          {selectionQueue.map((item, idx) => {
+                            const expanded = Boolean(queueExpanded[item.id])
+                            const preview = item.note.trim() || item.text.trim() || `Edit ${idx + 1}`
+                            const secondary = item.note.trim() ? item.text : 'Add a note'
+                            return (
+                              <div
+                                key={item.id}
+                                className="rounded-2xl border border-[var(--editor-border)] bg-[var(--editor-panel-muted)]"
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() => toggleQueueItem(item.id)}
+                                  className="w-full flex items-start justify-between gap-3 px-3 py-2 text-left"
+                                  aria-expanded={expanded}
+                                >
+                                  <div className="min-w-0">
+                                    <p className="text-[12px] font-semibold text-[var(--editor-ink)] truncate">
+                                      {preview}
+                                    </p>
+                                    <p className="text-[11px] text-[var(--editor-ink-muted)] truncate">
+                                      {secondary}
+                                    </p>
+                                  </div>
+                                  <span className="text-[11px] text-[var(--editor-ink-muted)] underline underline-offset-4 whitespace-nowrap">
+                                    {expanded ? 'Collapse' : 'Edit'}
+                                  </span>
+                                </button>
+
+                                {expanded && (
+                                  <div className="px-3 pb-3 space-y-2">
+                                    <div className="text-[12px] text-[var(--editor-ink)] leading-5 max-h-24 overflow-auto whitespace-pre-wrap">
+                                      {item.text}
+                                    </div>
+                                    <textarea
+                                      value={item.note}
+                                      onChange={(e) => updateQueuedNote(item.id, e.target.value)}
+                                      placeholder="Add a note about what to change..."
+                                      rows={2}
+                                      className="editor-input w-full text-[12px] leading-5 resize-none"
+                                    />
+                                    <div className="flex items-center justify-between">
+                                      <button
+                                        type="button"
+                                        onClick={() => removeSelectionNote(item.id)}
+                                        className="text-[11px] text-red-300 underline underline-offset-4"
+                                      >
+                                        Delete
+                                      </button>
+                                      <span className="text-[10px] text-[var(--editor-ink-muted)]">
+                                        Autosaved
+                                      </span>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            )
+                          })}
                         </div>
                       </div>
-                    ))}
-                  </div>
-                )}
+                    )}
 
-                <textarea
-                  value={composer}
-                  onChange={(e) => setComposer(e.target.value)}
-                  placeholder="Message the agent..."
-                  rows={2}
-                  className="editor-input w-full text-[13px] leading-5 resize-none"
-                />
+                    <textarea
+                      value={composer}
+                      onChange={(e) => setComposer(e.target.value)}
+                      placeholder="Message the agent..."
+                      rows={2}
+                      className="editor-input w-full text-[13px] leading-5 resize-none"
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    className="editor-button"
+                    disabled={!threadId || sending || (!composer.trim() && !hasQueuedNotes)}
+                  >
+                    {sending ? 'Sending...' : 'Send'}
+                  </button>
+                </form>
               </div>
-              <button
-                type="submit"
-                className="editor-button"
-                disabled={!threadId || sending || (!composer.trim() && selectionQueue.length === 0)}
-              >
-                {sending ? 'Sending...' : 'Send'}
-              </button>
-            </form>
-          </div>
+            </>
+          )}
         </section>
 
         {/* Draft Canvas */}
@@ -1359,7 +1516,12 @@ export default function GeneratePage() {
               }}
               onSelect={handleCanvasSelect}
               onMouseUp={handleCanvasSelect}
-              placeholder="Your draft lives here. Ask the agent for a draft, then insert it."
+              placeholder={
+                threadId
+                  ? 'Your draft lives here. Ask the agent for a draft, then insert it.'
+                  : 'Create an asset to start drafting.'
+              }
+              disabled={!threadId}
               className="w-full h-full min-h-[520px] p-5 rounded-2xl border border-[var(--editor-border)] bg-[var(--editor-canvas)] text-[14px] leading-7 text-[var(--editor-ink)] focus:outline-none focus:ring-2 focus:ring-[var(--editor-accent)] resize-none"
             />
           </div>
@@ -1391,7 +1553,7 @@ export default function GeneratePage() {
                   Saved {new Date(draftSavedAt).toLocaleTimeString()}
                 </span>
               )}
-              <button onClick={handleSaveDraft} className="editor-button text-xs">
+              <button onClick={handleSaveDraft} disabled={!threadId || draftSaving} className="editor-button text-xs">
                 {draftSaving ? 'Saving...' : 'Save'}
               </button>
             </div>

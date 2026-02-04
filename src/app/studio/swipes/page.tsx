@@ -82,6 +82,17 @@ export default function SwipesPage() {
     }
   }
 
+  async function handleDelete(id: string) {
+    if (!confirm('Delete this swipe? This cannot be undone.')) return
+    const res = await fetch(`/api/swipes/${id}`, { method: 'DELETE' })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      alert(data?.error || 'Failed to delete swipe')
+      return
+    }
+    setSwipes((prev) => prev.filter((s) => s.id !== id))
+  }
+
   if (!selectedProduct) {
     return (
       <div className="h-full flex items-center justify-center p-10">
@@ -135,7 +146,8 @@ export default function SwipesPage() {
           </p>
           <p className="text-sm text-[var(--editor-ink)] mt-2">
             We scrape the Meta Ad Library page, download the video, transcribe it with Whisper,
-            and store it in your swipe library. This requires the Render worker + an OpenAI API key.
+            and store it in your swipe library. This requires the Render worker + an OpenAI API key
+            (set in Settings → API Keys or via env fallback).
           </p>
           {stuckCount > 0 && (
             <div className="mt-4 p-3 rounded-2xl border border-[var(--editor-border)] bg-[var(--editor-panel-muted)]">
@@ -143,7 +155,7 @@ export default function SwipesPage() {
                 {stuckCount} swipe{stuckCount > 1 ? 's are' : ' is'} stuck in processing.
               </p>
               <p className="text-xs text-[var(--editor-ink-muted)] mt-1">
-                Check your Render worker is running and has `OPENAI_API_KEY` set.
+                Check your Render worker is running and has access to OpenAI (org key or `OPENAI_API_KEY`).
               </p>
             </div>
           )}
@@ -212,11 +224,23 @@ export default function SwipesPage() {
                   </span>
                 </div>
 
-                {s.created_at && (
-                  <p className="text-[11px] text-[var(--editor-ink-muted)] mt-4">
-                    {new Date(s.created_at).toLocaleString()}
-                  </p>
-                )}
+                <div className="mt-4 flex items-center justify-between gap-3">
+                  {s.created_at && (
+                    <p className="text-[11px] text-[var(--editor-ink-muted)]">
+                      {new Date(s.created_at).toLocaleString()}
+                    </p>
+                  )}
+                  <button
+                    onClick={(e) => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      handleDelete(s.id)
+                    }}
+                    className="text-[11px] text-red-400 hover:text-red-300"
+                  >
+                    Delete
+                  </button>
+                </div>
               </Link>
             ))}
           </div>

@@ -143,6 +143,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   const navItems = [
     { label: 'Agent', href: '/studio', icon: <SparkIcon /> },
+    { label: 'Agents', href: '/studio/agents', icon: <AgentsIcon /> },
     { label: 'Research', href: '/studio/research', icon: <SearchIcon /> },
     { label: 'Swipes', href: '/studio/swipes', icon: <FilmIcon /> },
     { label: 'Library', href: '/studio/library', icon: <LibraryIcon /> },
@@ -153,6 +154,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     { label: 'Organizations', href: '/studio/settings/organizations', icon: <OrgIcon /> },
     { label: 'Brands', href: '/studio/settings/brands', icon: <TagIcon /> },
     { label: 'Products', href: '/studio/settings/products', icon: <BoxIcon /> },
+    { label: 'API Keys', href: '/studio/settings/api-keys', icon: <KeyIcon /> },
     { label: 'Users', href: '/admin/users', icon: <UsersIcon /> },
   ]
 
@@ -468,6 +470,27 @@ function SparkIcon() {
   )
 }
 
+function AgentsIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5" aria-hidden="true">
+      <path
+        d="M7 7a3 3 0 106 0 3 3 0 00-6 0zM11 13a4 4 0 00-4 4v2h8v-2a4 4 0 00-4-4z"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M15.5 6.5a2.5 2.5 0 112.5 2.5 2.5 2.5 0 01-2.5-2.5zM16 13h4a3 3 0 013 3v3"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
 function FilmIcon() {
   return (
     <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5" aria-hidden="true">
@@ -690,6 +713,25 @@ function UsersIcon() {
         stroke="currentColor"
         strokeWidth="1.8"
         strokeLinecap="round"
+      />
+    </svg>
+  )
+}
+
+function KeyIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5" aria-hidden="true">
+      <path
+        d="M15 7a4 4 0 11-8 0 4 4 0 018 0z"
+        stroke="currentColor"
+        strokeWidth="1.8"
+      />
+      <path
+        d="M11 11v3l3 3h3l2 2"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
       />
     </svg>
   )

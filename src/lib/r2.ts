@@ -1,4 +1,4 @@
-import { S3Client, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3'
+import { S3Client, GetObjectCommand, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 
 function getR2Config() {
@@ -52,4 +52,11 @@ export async function signR2PutObjectUrl(key: string, contentType?: string, expi
     ContentType: contentType || 'application/octet-stream',
   })
   return getSignedUrl(client, command, { expiresIn: expiresInSeconds })
+}
+
+export async function deleteR2Object(key: string) {
+  const client = getR2Client()
+  const bucket = cachedBucket || getR2Bucket()
+  const command = new DeleteObjectCommand({ Bucket: bucket, Key: key })
+  await client.send(command)
 }

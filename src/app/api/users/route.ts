@@ -23,16 +23,6 @@ export async function GET() {
       JOIN organizations ON organizations.id = user_organization_access.organization_id
     `
 
-    const brandAccess = await sql`
-      SELECT
-        user_brand_access.user_id,
-        user_brand_access.brand_id,
-        brands.id AS brand_id,
-        brands.name AS brand_name
-      FROM user_brand_access
-      JOIN brands ON brands.id = user_brand_access.brand_id
-    `
-
     const orgByUser = new Map<string, Array<{ organization_id: string; organizations: { id: string; name: string } }>>()
     for (const row of orgAccess) {
       const list = orgByUser.get(row.user_id) || []
@@ -43,20 +33,9 @@ export async function GET() {
       orgByUser.set(row.user_id, list)
     }
 
-    const brandByUser = new Map<string, Array<{ brand_id: string; brands: { id: string; name: string } }>>()
-    for (const row of brandAccess) {
-      const list = brandByUser.get(row.user_id) || []
-      list.push({
-        brand_id: row.brand_id,
-        brands: { id: row.brand_id, name: row.brand_name },
-      })
-      brandByUser.set(row.user_id, list)
-    }
-
     const data = users.map((user: any) => ({
       ...user,
       user_organization_access: orgByUser.get(user.id) || [],
-      user_brand_access: brandByUser.get(user.id) || [],
     }))
 
     return NextResponse.json(data)

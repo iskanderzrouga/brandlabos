@@ -69,3 +69,24 @@ export async function PATCH(request: NextRequest, context: { params: Promise<{ i
     return NextResponse.json({ error: 'Failed to update thread' }, { status: 500 })
   }
 }
+
+export async function DELETE(_request: NextRequest, context: { params: Promise<{ id: string }> }) {
+  const user = await requireAuth()
+  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  const { id } = await context.params
+
+  try {
+    const rows = await sql`
+      DELETE FROM agent_threads
+      WHERE id = ${id}
+        AND user_id = ${user.id}
+      RETURNING id
+    `
+    if (!rows[0]) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    return NextResponse.json({ success: true })
+  } catch (error) {
+    console.error('Delete thread error:', error)
+    return NextResponse.json({ error: 'Failed to delete thread' }, { status: 500 })
+  }
+}

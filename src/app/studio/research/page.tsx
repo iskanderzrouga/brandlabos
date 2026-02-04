@@ -359,7 +359,7 @@ export default function ResearchPage() {
                     {stuckCount} item{stuckCount > 1 ? 's are' : ' is'} stuck processing.
                   </p>
                   <p className="text-[11px] text-[var(--editor-ink-muted)] mt-1">
-                    Check your Render worker and `ANTHROPIC_API_KEY`.
+                    Check your Render worker and Anthropic access (org key or `ANTHROPIC_API_KEY`).
                   </p>
                 </div>
               )}

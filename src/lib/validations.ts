@@ -163,7 +163,7 @@ export type CreateAsset = z.infer<typeof createAssetSchema>
 // USER MANAGEMENT SCHEMAS
 // ============================================================================
 
-export const userRoleEnum = z.enum(['super_admin', 'org_admin', 'brand_user'])
+export const userRoleEnum = z.enum(['super_admin', 'org_admin'])
 
 export const createAppUserSchema = z.object({
   email: z.string().email('Valid email required'),

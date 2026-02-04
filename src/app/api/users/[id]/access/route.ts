@@ -8,7 +8,7 @@ export async function POST(request: NextRequest, { params }: Params) {
   try {
     const { id: userId } = await params
     const body = await request.json()
-    const { type, organization_id, brand_id } = body
+    const { type, organization_id } = body
 
     if (type === 'organization' && organization_id) {
       try {
@@ -23,26 +23,6 @@ export async function POST(request: NextRequest, { params }: Params) {
         if (error?.code === '23505') {
           return NextResponse.json(
             { error: 'User already has access to this organization' },
-            { status: 409 }
-          )
-        }
-        return NextResponse.json({ error: error?.message || 'Database error' }, { status: 500 })
-      }
-    }
-
-    if (type === 'brand' && brand_id) {
-      try {
-        const rows = await sql`
-          INSERT INTO user_brand_access (user_id, brand_id)
-          VALUES (${userId}, ${brand_id})
-          RETURNING *
-        `
-
-        return NextResponse.json(rows[0], { status: 201 })
-      } catch (error: any) {
-        if (error?.code === '23505') {
-          return NextResponse.json(
-            { error: 'User already has access to this brand' },
             { status: 409 }
           )
         }
@@ -77,12 +57,6 @@ export async function DELETE(request: NextRequest, { params }: Params) {
     if (type === 'organization') {
       await sql`
         DELETE FROM user_organization_access
-        WHERE id = ${accessId}
-          AND user_id = ${userId}
-      `
-    } else if (type === 'brand') {
-      await sql`
-        DELETE FROM user_brand_access
         WHERE id = ${accessId}
           AND user_id = ${userId}
       `

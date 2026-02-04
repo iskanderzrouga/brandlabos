@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { useParams } from 'next/navigation'
+import { useParams, useRouter } from 'next/navigation'
 import { useEffect, useMemo, useState } from 'react'
 
 type SwipeRow = {
@@ -17,6 +17,7 @@ type SwipeRow = {
 
 export default function SwipeDetailPage() {
   const params = useParams()
+  const router = useRouter()
   const id = String((params as any)?.id || '')
 
   const [loading, setLoading] = useState(true)
@@ -30,6 +31,17 @@ export default function SwipeDetailPage() {
     if (swipe.status === 'failed') return 'Failed'
     return 'Processing'
   }, [swipe])
+
+  async function handleDelete() {
+    if (!confirm('Delete this swipe? This cannot be undone.')) return
+    const res = await fetch(`/api/swipes/${id}`, { method: 'DELETE' })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      alert(data?.error || 'Failed to delete swipe')
+      return
+    }
+    router.push('/studio/swipes')
+  }
 
   useEffect(() => {
     let active = true
@@ -125,6 +137,9 @@ export default function SwipeDetailPage() {
             >
               {statusLabel}
             </span>
+            <button onClick={handleDelete} className="editor-button-ghost text-xs text-red-300">
+              Delete
+            </button>
             <Link href={`/studio?swipe=${swipe.id}`} className="editor-button-ghost text-xs">
               Use in Generate
             </Link>

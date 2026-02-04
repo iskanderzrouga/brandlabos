@@ -3,14 +3,9 @@
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
 
-type UserRole = 'super_admin' | 'org_admin' | 'brand_user'
+type UserRole = 'super_admin' | 'org_admin'
 
 interface Organization {
-  id: string
-  name: string
-}
-
-interface Brand {
   id: string
   name: string
 }
@@ -26,28 +21,21 @@ interface AppUser {
     organization_id: string
     organizations: Organization
   }>
-  user_brand_access: Array<{
-    brand_id: string
-    brands: Brand
-  }>
 }
 
 const roleLabels: Record<UserRole, string> = {
   super_admin: 'Super Admin',
   org_admin: 'Org Admin',
-  brand_user: 'Brand User',
 }
 
 const roleBadgeColors: Record<UserRole, string> = {
   super_admin: 'bg-purple-500/20 text-purple-400 border-purple-500/30',
   org_admin: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
-  brand_user: 'bg-green-500/20 text-green-400 border-green-500/30',
 }
 
 export default function UsersAdminPage() {
   const [users, setUsers] = useState<AppUser[]>([])
   const [organizations, setOrganizations] = useState<Organization[]>([])
-  const [brands, setBrands] = useState<Brand[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [showCreateModal, setShowCreateModal] = useState(false)
@@ -60,19 +48,15 @@ export default function UsersAdminPage() {
   async function fetchData() {
     try {
       setLoading(true)
-      const [usersRes, orgsRes, brandsRes] = await Promise.all([
+      const [usersRes, orgsRes] = await Promise.all([
         fetch('/api/users'),
         fetch('/api/organizations'),
-        fetch('/api/brands'),
       ])
 
       if (!usersRes.ok) throw new Error('Failed to fetch users')
       if (!orgsRes.ok) throw new Error('Failed to fetch organizations')
-      if (!brandsRes.ok) throw new Error('Failed to fetch brands')
-
       setUsers(await usersRes.json())
       setOrganizations(await orgsRes.json())
-      setBrands(await brandsRes.json())
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error')
     } finally {
@@ -110,14 +94,14 @@ export default function UsersAdminPage() {
     }
   }
 
-  async function addAccess(userId: string, type: 'organization' | 'brand', id: string) {
+  async function addAccess(userId: string, id: string) {
     try {
       const res = await fetch(`/api/users/${userId}/access`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          type,
-          [type === 'organization' ? 'organization_id' : 'brand_id']: id,
+          type: 'organization',
+          organization_id: id,
         }),
       })
 
@@ -132,9 +116,9 @@ export default function UsersAdminPage() {
     }
   }
 
-  async function removeAccess(userId: string, type: 'organization' | 'brand', accessId: string) {
+  async function removeAccess(userId: string, accessId: string) {
     try {
-      const res = await fetch(`/api/users/${userId}/access?type=${type}&access_id=${accessId}`, {
+      const res = await fetch(`/api/users/${userId}/access?type=organization&access_id=${accessId}`, {
         method: 'DELETE',
       })
 
@@ -248,13 +232,12 @@ export default function UsersAdminPage() {
                     >
                       <option value="super_admin" className="bg-zinc-900">Super Admin</option>
                       <option value="org_admin" className="bg-zinc-900">Org Admin</option>
-                      <option value="brand_user" className="bg-zinc-900">Brand User</option>
                     </select>
                   </td>
                   <td className="px-4 py-3">
                     {user.role === 'super_admin' ? (
                       <span className="text-zinc-500 text-sm">All access</span>
-                    ) : user.role === 'org_admin' ? (
+                    ) : (
                       <div className="flex flex-wrap gap-1">
                         {user.user_organization_access?.map((acc) => (
                           <span
@@ -266,20 +249,6 @@ export default function UsersAdminPage() {
                         ))}
                         {(!user.user_organization_access || user.user_organization_access.length === 0) && (
                           <span className="text-zinc-500 text-sm">No orgs assigned</span>
-                        )}
-                      </div>
-                    ) : (
-                      <div className="flex flex-wrap gap-1">
-                        {user.user_brand_access?.map((acc) => (
-                          <span
-                            key={acc.brand_id}
-                            className="inline-flex items-center gap-1 px-2 py-0.5 bg-green-500/10 text-green-400 rounded text-xs"
-                          >
-                            {acc.brands?.name}
-                          </span>
-                        ))}
-                        {(!user.user_brand_access || user.user_brand_access.length === 0) && (
-                          <span className="text-zinc-500 text-sm">No brands assigned</span>
                         )}
                       </div>
                     )}
@@ -335,7 +304,6 @@ export default function UsersAdminPage() {
             fetchData()
           }}
           organizations={organizations}
-          brands={brands}
           onAddAccess={addAccess}
         />
       )}
@@ -345,7 +313,6 @@ export default function UsersAdminPage() {
         <AccessModal
           user={users.find((u) => u.id === showAccessModal)!}
           organizations={organizations}
-          brands={brands}
           onClose={() => setShowAccessModal(null)}
           onAddAccess={addAccess}
           onRemoveAccess={removeAccess}
@@ -358,20 +325,17 @@ export default function UsersAdminPage() {
 function CreateUserModal({
   onClose,
   organizations,
-  brands,
   onAddAccess,
 }: {
   onClose: () => void
   organizations: Organization[]
-  brands: Brand[]
-  onAddAccess: (userId: string, type: 'organization' | 'brand', id: string) => Promise<void>
+  onAddAccess: (userId: string, id: string) => Promise<void>
 }) {
   const [email, setEmail] = useState('')
   const [name, setName] = useState('')
-  const [role, setRole] = useState<UserRole>('brand_user')
+  const [role, setRole] = useState<UserRole>('org_admin')
   const [password, setPassword] = useState('')
   const [selectedOrg, setSelectedOrg] = useState('')
-  const [selectedBrand, setSelectedBrand] = useState('')
   const [creating, setCreating] = useState(false)
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -380,10 +344,6 @@ function CreateUserModal({
     // Validate access selection for non-super_admin
     if (role === 'org_admin' && !selectedOrg) {
       alert('Please select an organization for this Org Admin')
-      return
-    }
-    if (role === 'brand_user' && !selectedBrand) {
-      alert('Please select a brand for this Brand User')
       return
     }
 
@@ -402,12 +362,10 @@ function CreateUserModal({
         throw new Error(newUser.error || 'Failed to create user')
       }
 
-      // Add access based on role
-      if (role === 'org_admin' && selectedOrg) {
-        await onAddAccess(newUser.id, 'organization', selectedOrg)
-      } else if (role === 'brand_user' && selectedBrand) {
-        await onAddAccess(newUser.id, 'brand', selectedBrand)
-      }
+    // Add access based on role
+    if (role === 'org_admin' && selectedOrg) {
+      await onAddAccess(newUser.id, selectedOrg)
+    }
 
       if (newUser.temp_password) {
         alert(`Temporary password for ${newUser.email}: ${newUser.temp_password}`)
@@ -454,11 +412,9 @@ function CreateUserModal({
               onChange={(e) => {
                 setRole(e.target.value as UserRole)
                 setSelectedOrg('')
-                setSelectedBrand('')
               }}
               className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg"
             >
-              <option value="brand_user">Brand User</option>
               <option value="org_admin">Org Admin</option>
               <option value="super_admin">Super Admin</option>
             </select>
@@ -494,26 +450,6 @@ function CreateUserModal({
             </div>
           )}
 
-          {/* Brand selector for brand_user */}
-          {role === 'brand_user' && (
-            <div>
-              <label className="block text-sm font-medium text-zinc-400 mb-1">
-                Assign to Brand <span className="text-red-400">*</span>
-              </label>
-              <select
-                value={selectedBrand}
-                onChange={(e) => setSelectedBrand(e.target.value)}
-                className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg"
-                required
-              >
-                <option value="">Select brand...</option>
-                {brands.map((brand) => (
-                  <option key={brand.id} value={brand.id}>{brand.name}</option>
-                ))}
-              </select>
-            </div>
-          )}
-
           <div className="flex gap-3 pt-4">
             <button
               type="button"
@@ -540,20 +476,17 @@ function CreateUserModal({
 function AccessModal({
   user,
   organizations,
-  brands,
   onClose,
   onAddAccess,
   onRemoveAccess,
 }: {
   user: AppUser
   organizations: Organization[]
-  brands: Brand[]
   onClose: () => void
-  onAddAccess: (userId: string, type: 'organization' | 'brand', id: string) => void
-  onRemoveAccess: (userId: string, type: 'organization' | 'brand', accessId: string) => void
+  onAddAccess: (userId: string, id: string) => void
+  onRemoveAccess: (userId: string, accessId: string) => void
 }) {
   const [selectedOrg, setSelectedOrg] = useState('')
-  const [selectedBrand, setSelectedBrand] = useState('')
 
   const isOrgAdmin = user.role === 'org_admin'
 
@@ -565,7 +498,7 @@ function AccessModal({
           Role: <span className={`px-2 py-0.5 rounded ${roleBadgeColors[user.role]}`}>{roleLabels[user.role]}</span>
         </p>
 
-        {isOrgAdmin ? (
+        {isOrgAdmin && (
           <>
             <h3 className="font-medium mb-2">Organization Access</h3>
             <div className="space-y-2 mb-4">
@@ -573,7 +506,7 @@ function AccessModal({
                 <div key={acc.organization_id} className="flex items-center justify-between p-2 bg-zinc-800 rounded">
                   <span>{acc.organizations?.name}</span>
                   <button
-                    onClick={() => onRemoveAccess(user.id, 'organization', acc.organization_id)}
+                    onClick={() => onRemoveAccess(user.id, acc.organization_id)}
                     className="text-red-400 hover:text-red-300 text-sm"
                   >
                     Remove
@@ -597,54 +530,11 @@ function AccessModal({
               <button
                 onClick={() => {
                   if (selectedOrg) {
-                    onAddAccess(user.id, 'organization', selectedOrg)
+                    onAddAccess(user.id, selectedOrg)
                     setSelectedOrg('')
                   }
                 }}
                 disabled={!selectedOrg}
-                className="px-4 py-2 bg-zinc-700 hover:bg-zinc-600 rounded-lg disabled:opacity-50"
-              >
-                Add
-              </button>
-            </div>
-          </>
-        ) : (
-          <>
-            <h3 className="font-medium mb-2">Brand Access</h3>
-            <div className="space-y-2 mb-4">
-              {user.user_brand_access?.map((acc) => (
-                <div key={acc.brand_id} className="flex items-center justify-between p-2 bg-zinc-800 rounded">
-                  <span>{acc.brands?.name}</span>
-                  <button
-                    onClick={() => onRemoveAccess(user.id, 'brand', acc.brand_id)}
-                    className="text-red-400 hover:text-red-300 text-sm"
-                  >
-                    Remove
-                  </button>
-                </div>
-              ))}
-            </div>
-            <div className="flex gap-2">
-              <select
-                value={selectedBrand}
-                onChange={(e) => setSelectedBrand(e.target.value)}
-                className="flex-1 px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg"
-              >
-                <option value="">Select brand...</option>
-                {brands
-                  .filter((b) => !user.user_brand_access?.some((a) => a.brand_id === b.id))
-                  .map((brand) => (
-                    <option key={brand.id} value={brand.id}>{brand.name}</option>
-                  ))}
-              </select>
-              <button
-                onClick={() => {
-                  if (selectedBrand) {
-                    onAddAccess(user.id, 'brand', selectedBrand)
-                    setSelectedBrand('')
-                  }
-                }}
-                disabled={!selectedBrand}
                 className="px-4 py-2 bg-zinc-700 hover:bg-zinc-600 rounded-lg disabled:opacity-50"
               >
                 Add

@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { sql } from '@/lib/db'
-
-const anthropic = new Anthropic()
+import { getOrgApiKey } from '@/lib/api-keys'
 
 // POST /api/generate-avatar-name - Generate a descriptive avatar name
 export async function POST(request: NextRequest) {
@@ -25,6 +24,20 @@ export async function POST(request: NextRequest) {
     `
 
     const existingNames = existingAvatars?.map((a) => a.name.toLowerCase()) || []
+
+    const orgRows = await sql`
+      SELECT brands.organization_id AS organization_id
+      FROM products
+      LEFT JOIN brands ON brands.id = products.brand_id
+      WHERE products.id = ${product_id}
+      LIMIT 1
+    `
+    const orgId = orgRows[0]?.organization_id as string | undefined
+    const anthropicKey = await getOrgApiKey('anthropic', orgId || null)
+    if (!anthropicKey) {
+      return NextResponse.json({ error: 'ANTHROPIC_API_KEY is not set' }, { status: 500 })
+    }
+    const anthropic = new Anthropic({ apiKey: anthropicKey })
 
     const systemPrompt = `You are a naming expert. Generate a short, descriptive avatar name (3-8 words, lowercase, hyphenated) based on the avatar profile provided.
 

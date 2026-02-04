@@ -20,6 +20,7 @@ Background worker for heavy swipe ingestion (v1: Meta Ad Library URL -> download
 - `OPENAI_API_KEY` (Whisper transcription)
 - `ANTHROPIC_API_KEY` (title + summary)
 - `ANTHROPIC_SUMMARIZE_MODEL` (optional, defaults to `claude-3-5-haiku-latest`)
+- `APP_ENCRYPTION_KEY` (required if using org-level keys stored in DB)
 
 ## Run Locally
 

@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { sql } from '@/lib/db'
 import { requireAuth } from '@/lib/require-auth'
+import { DEFAULT_PROMPT_BLOCKS } from '@/lib/prompt-defaults'
+import { getOrgApiKey } from '@/lib/api-keys'
 
 function parseJsonPayload(text: string) {
   const cleaned = (text.match(/```json\s*([\s\S]*?)\s*```/) || [null, text])[1].trim()
@@ -10,6 +12,36 @@ function parseJsonPayload(text: string) {
   } catch {
     return null
   }
+}
+
+type PromptBlockRow = {
+  id: string
+  type: string
+  content: string
+  metadata?: { key?: string }
+}
+
+async function loadGlobalPromptBlocks(): Promise<Map<string, PromptBlockRow>> {
+  const blocks = await sql`
+    SELECT id, type, content, metadata
+    FROM prompt_blocks
+    WHERE is_active = true
+      AND scope = 'global'
+  ` as PromptBlockRow[]
+
+  const map = new Map<string, PromptBlockRow>()
+  for (const b of blocks || []) {
+    const key = (b.metadata as { key?: string } | undefined)?.key || b.type
+    map.set(key, b)
+  }
+  return map
+}
+
+function getPromptBlockContent(blocks: Map<string, PromptBlockRow>, key: string): string {
+  const db = blocks.get(key)?.content
+  if (db) return db
+  const fallback = (DEFAULT_PROMPT_BLOCKS as any)[key]?.content
+  return typeof fallback === 'string' ? fallback : ''
 }
 
 export async function POST(request: NextRequest) {
@@ -99,19 +131,33 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ categories: [], assignments: [] })
     }
 
-    const anthropicKey = process.env.ANTHROPIC_API_KEY
+    const orgRows = await sql`
+      SELECT brands.organization_id AS organization_id
+      FROM products
+      LEFT JOIN brands ON brands.id = products.brand_id
+      WHERE products.id = ${productId}
+      LIMIT 1
+    `
+    const orgId = orgRows[0]?.organization_id as string | undefined
+
+    const anthropicKey = await getOrgApiKey('anthropic', orgId || null)
     if (!anthropicKey) {
       return NextResponse.json({ error: 'ANTHROPIC_API_KEY is not set' }, { status: 500 })
     }
 
-    const prompt = `You are organizing research for a copywriting studio.\nReturn JSON with:\n- categories: [{ name, description }]\n- assignments: [{ item_id, category_name }]\n\nRules:\n- Create 2-6 categories max.\n- Use short names.\n- Map every item.\n- Output ONLY JSON.\n\nItems:\n${rows
+    const itemsText = rows
       .map(
         (item: any, idx: number) =>
           `${idx + 1}. ID: ${item.id}\nTitle: ${item.title || '(none)'}\nSummary: ${
             item.summary || ''
           }\nExcerpt: ${(item.content || '').slice(0, 600)}\n`
       )
-      .join('\n')}`
+      .join('\n')
+
+    const blocks = await loadGlobalPromptBlocks()
+    const system = getPromptBlockContent(blocks, 'research_organizer_system')
+    const promptTemplate = getPromptBlockContent(blocks, 'research_organizer_prompt')
+    const prompt = promptTemplate.replace(/{{\s*items\s*}}/gi, () => itemsText)
 
     const anthropic = new Anthropic({ apiKey: anthropicKey })
     const model = process.env.ANTHROPIC_ORGANIZE_MODEL || 'claude-3-5-haiku-latest'
@@ -119,8 +165,7 @@ export async function POST(request: NextRequest) {
     const message = await anthropic.messages.create({
       model,
       max_tokens: 600,
-      system:
-        'You are a precise organizer. Output strict JSON only, no extra commentary.',
+      system: system || 'You are a precise organizer. Output strict JSON only, no extra commentary.',
       messages: [{ role: 'user', content: prompt }],
     })
 

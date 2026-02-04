@@ -2,10 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { promptAssembler } from '@/lib/services/prompt-assembler'
 import { sql } from '@/lib/db'
-
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY!,
-})
+import { getOrgApiKey } from '@/lib/api-keys'
 
 interface GenerateRequest {
   product_id: string
@@ -51,6 +48,20 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       )
     }
+
+    const orgRows = await sql`
+      SELECT brands.organization_id AS organization_id
+      FROM products
+      LEFT JOIN brands ON brands.id = products.brand_id
+      WHERE products.id = ${body.product_id}
+      LIMIT 1
+    `
+    const orgId = orgRows[0]?.organization_id as string | undefined
+    const anthropicKey = await getOrgApiKey('anthropic', orgId || null)
+    if (!anthropicKey) {
+      return NextResponse.json({ error: 'ANTHROPIC_API_KEY is not set' }, { status: 500 })
+    }
+    const anthropic = new Anthropic({ apiKey: anthropicKey })
 
     // Assemble the prompt (or use custom if provided)
     const numConcepts = body.num_concepts || 3

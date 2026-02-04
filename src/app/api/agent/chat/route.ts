@@ -3,6 +3,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { sql } from '@/lib/db'
 import { requireAuth } from '@/lib/require-auth'
 import { DEFAULT_PROMPT_BLOCKS } from '@/lib/prompt-defaults'
+import { getOrgApiKey } from '@/lib/api-keys'
 
 type ThreadContext = {
   skill?: string
@@ -99,10 +100,12 @@ function buildSystemPrompt(args: {
 
   const writingRules = getPromptBlockContent(blocks, 'writing_rules')
   const skillGuidance = getPromptBlockContent(blocks, skill)
+  const agentSystemTemplate = getPromptBlockContent(blocks, 'agent_system')
+  const agentSystem = agentSystemTemplate.replace(/{{\s*versions\s*}}/gi, () => String(versions))
 
   const sections: string[] = []
 
-  sections.push(`# BrandLab Agent\n\nYou are a senior direct-response copywriter and creative strategist.\n\nYou work inside BrandLab Studio. You can use tools to look up saved swipes (Meta ads), and to ingest new Meta Ad Library URLs.\n\nIMPORTANT:\n- If you suggest changing settings (avatars, skill, versions, swipe), ask the user to confirm.\n- When the user asks you to write, output the draft ONLY inside a \`\`\`draft\n...\n\`\`\` code block. Do not repeat the draft outside the block.\n- Default drafts count = ${versions}. If versions > 1, format inside the draft block as:\n  - \"## Version 1\"\n  - \"## Version 2\" ...\n- Keep non-draft chat replies extremely brief (one short sentence OR 1-2 bullets). The draft is inserted into a canvas, so keep chat commentary minimal and practical.\n- Keep output concise, skimmable, and human.`)
+  if (agentSystem.trim()) sections.push(agentSystem)
 
   sections.push(`## CURRENT SKILL\n${skill}`)
   if (skillGuidance) sections.push(`## SKILL GUIDANCE\n${skillGuidance}`)
@@ -281,6 +284,7 @@ export async function POST(request: NextRequest) {
         products.id,
         products.name,
         products.context,
+        brands.organization_id AS organization_id,
         brands.name AS brand_name,
         brands.voice_guidelines AS brand_voice_guidelines
       FROM products
@@ -381,7 +385,7 @@ export async function POST(request: NextRequest) {
       return { role, content }
     })
 
-    const anthropicKey = process.env.ANTHROPIC_API_KEY
+    const anthropicKey = await getOrgApiKey('anthropic', productRow.organization_id || null)
     if (!anthropicKey) {
       return NextResponse.json({ error: 'ANTHROPIC_API_KEY is not set' }, { status: 500 })
     }

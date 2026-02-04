@@ -33,6 +33,17 @@ export default function LibraryPage() {
   const [loading, setLoading] = useState(true)
   const [q, setQ] = useState('')
 
+  async function handleDelete(id: string) {
+    if (!confirm('Delete this asset? This cannot be undone.')) return
+    const res = await fetch(`/api/agent/threads/${id}`, { method: 'DELETE' })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      alert(data?.error || 'Failed to delete asset')
+      return
+    }
+    setThreads((prev) => prev.filter((t) => t.id !== id))
+  }
+
   async function load() {
     if (!selectedProduct) return
     setLoading(true)
@@ -127,11 +138,23 @@ export default function LibraryPage() {
                         </p>
                       )}
                     </div>
-                    {t.updated_at && (
-                      <span className="text-[11px] text-[var(--editor-ink-muted)]">
-                        {new Date(t.updated_at).toLocaleString()}
-                      </span>
-                    )}
+                    <div className="flex items-center gap-3">
+                      {t.updated_at && (
+                        <span className="text-[11px] text-[var(--editor-ink-muted)]">
+                          {new Date(t.updated_at).toLocaleString()}
+                        </span>
+                      )}
+                      <button
+                        onClick={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          handleDelete(t.id)
+                        }}
+                        className="text-[11px] text-red-400 hover:text-red-300"
+                      >
+                        Delete
+                      </button>
+                    </div>
                   </div>
                 </Link>
               )

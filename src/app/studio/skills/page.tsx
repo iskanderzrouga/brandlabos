@@ -86,6 +86,8 @@ export default function SkillsPage() {
     return [...core, ...custom]
   }, [blocks])
 
+  const coreSkillKeys = useMemo(() => new Set(CONTENT_TYPES.map((ct) => ct.id)), [])
+
   const activeMeta = useMemo(() => {
     const list = tab === 'skills' ? skillList : RULES
     return list.find((item) => item.key === activeKey) || null
@@ -94,6 +96,9 @@ export default function SkillsPage() {
   function getBlockForKey(key: string) {
     return blocks.find((b) => b.metadata?.key === key) || null
   }
+
+  const activeBlock = activeKey ? getBlockForKey(activeKey) : null
+  const isCustomSkill = Boolean(activeKey && tab === 'skills' && !coreSkillKeys.has(activeKey))
 
   function loadEditor(key: string) {
     setActiveKey(key)
@@ -146,6 +151,42 @@ export default function SkillsPage() {
       setMessage(err instanceof Error ? err.message : 'Failed to save')
     } finally {
       setSaving(false)
+    }
+  }
+
+  async function resetActiveBlock() {
+    if (!activeKey) return
+    const block = getBlockForKey(activeKey)
+    if (!block) return
+    if (!confirm('Reset this prompt to default?')) return
+    try {
+      const res = await fetch(`/api/prompt-blocks/${block.id}`, { method: 'DELETE' })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data?.error || 'Failed to reset')
+      await loadBlocks()
+      const fallback = DEFAULT_PROMPT_BLOCKS[activeKey as keyof typeof DEFAULT_PROMPT_BLOCKS]?.content || ''
+      setEditContent(fallback)
+      setMessage('Reset to default.')
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : 'Failed to reset')
+    }
+  }
+
+  async function deleteCustomSkill() {
+    if (!activeKey) return
+    const block = getBlockForKey(activeKey)
+    if (!block) return
+    if (!confirm('Delete this custom skill? This cannot be undone.')) return
+    try {
+      const res = await fetch(`/api/prompt-blocks/${block.id}`, { method: 'DELETE' })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data?.error || 'Failed to delete')
+      await loadBlocks()
+      setActiveKey(null)
+      setEditContent('')
+      setMessage('Deleted.')
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : 'Failed to delete')
     }
   }
 
@@ -275,13 +316,25 @@ export default function SkillsPage() {
           </div>
           <div className="flex items-center gap-2">
             {!creating && (
-              <button
-                onClick={saveBlock}
-                disabled={saving}
-                className="editor-button text-xs"
-              >
-                {saving ? 'Saving...' : 'Save'}
-              </button>
+              <>
+                <button
+                  onClick={saveBlock}
+                  disabled={saving}
+                  className="editor-button text-xs"
+                >
+                  {saving ? 'Saving...' : 'Save'}
+                </button>
+                {activeBlock && !isCustomSkill && (
+                  <button onClick={resetActiveBlock} className="editor-button-ghost text-xs">
+                    Reset
+                  </button>
+                )}
+                {activeBlock && isCustomSkill && (
+                  <button onClick={deleteCustomSkill} className="editor-button-ghost text-xs text-red-300">
+                    Delete
+                  </button>
+                )}
+              </>
             )}
           </div>
         </div>

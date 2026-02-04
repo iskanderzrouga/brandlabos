@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { Readable } from 'node:stream'
 import { spawn } from 'node:child_process'
+import crypto from 'node:crypto'
 
 import { Pool } from 'pg'
 import { chromium } from 'playwright'
@@ -37,10 +38,29 @@ const r2 = new S3Client({
   forcePathStyle: true,
 })
 
-const openai = new OpenAI({ apiKey: requiredEnv('OPENAI_API_KEY') })
-const anthropic = new Anthropic({ apiKey: requiredEnv('ANTHROPIC_API_KEY') })
-
 const SUMMARIZE_MODEL = process.env.ANTHROPIC_SUMMARIZE_MODEL || 'claude-3-5-haiku-latest'
+
+const openaiClientCache = new Map()
+const anthropicClientCache = new Map()
+const orgIdCache = new Map()
+
+const DEFAULT_PROMPT_BLOCKS = {
+  swipe_summarizer_system:
+    'You create short swipe titles and high-signal summaries for ad/transcript libraries. Output ONLY JSON.',
+  swipe_summarizer_prompt: `Return JSON with keys: title, summary.
+
+URL: {{url}}
+
+Transcript:
+{{transcript}}`,
+  research_summarizer_system: 'You summarize research notes into short, useful briefs. Output ONLY JSON.',
+  research_summarizer_prompt: `Return JSON with keys: title, summary, keywords (array of 3-6).
+
+Title: {{title}}
+
+Text:
+{{text}}`,
+}
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms))
@@ -49,6 +69,146 @@ function sleep(ms) {
 function log(...args) {
   // eslint-disable-next-line no-console
   console.log(new Date().toISOString(), `[${WORKER_ID}]`, ...args)
+}
+
+const ENV_MAP = {
+  openai: 'OPENAI_API_KEY',
+  anthropic: 'ANTHROPIC_API_KEY',
+}
+
+function resolveEncryptionKey() {
+  const raw = process.env.APP_ENCRYPTION_KEY
+  if (!raw) throw new Error('APP_ENCRYPTION_KEY is not set')
+  const trimmed = raw.trim()
+  if (/^[0-9a-fA-F]+$/.test(trimmed) && trimmed.length === 64) {
+    const buf = Buffer.from(trimmed, 'hex')
+    if (buf.length === 32) return buf
+  }
+  try {
+    const decoded = Buffer.from(trimmed, 'base64')
+    if (decoded.length === 32) return decoded
+  } catch {
+    // fall through
+  }
+  const utf8 = Buffer.from(trimmed, 'utf8')
+  if (utf8.length === 32) return utf8
+  throw new Error('APP_ENCRYPTION_KEY must be 32 bytes (hex/base64/raw)')
+}
+
+function decryptSecret(payload) {
+  const key = resolveEncryptionKey()
+  const parts = String(payload || '').split(':')
+  if (parts.length !== 4 || parts[0] !== 'v1') {
+    throw new Error('Invalid encrypted payload')
+  }
+  const iv = Buffer.from(parts[1], 'base64')
+  const tag = Buffer.from(parts[2], 'base64')
+  const data = Buffer.from(parts[3], 'base64')
+  const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv)
+  decipher.setAuthTag(tag)
+  const decrypted = Buffer.concat([decipher.update(data), decipher.final()])
+  return decrypted.toString('utf8')
+}
+
+async function getOrgIdForProduct(productId) {
+  if (orgIdCache.has(productId)) return orgIdCache.get(productId)
+  const { rows } = await pool.query(
+    `
+    SELECT brands.organization_id AS organization_id
+    FROM products
+    LEFT JOIN brands ON brands.id = products.brand_id
+    WHERE products.id = $1
+    LIMIT 1
+  `,
+    [productId]
+  )
+  const orgId = rows?.[0]?.organization_id || null
+  orgIdCache.set(productId, orgId)
+  return orgId
+}
+
+async function getOrgApiKey(provider, orgId) {
+  let key = null
+  if (orgId) {
+    const { rows } = await pool.query(
+      `
+      SELECT api_key_encrypted
+      FROM organization_api_keys
+      WHERE organization_id = $1
+        AND provider = $2
+      LIMIT 1
+    `,
+      [orgId, provider]
+    )
+    if (rows?.[0]?.api_key_encrypted) {
+      key = decryptSecret(rows[0].api_key_encrypted)
+    }
+  }
+
+  if (!key) {
+    const envKey = process.env[ENV_MAP[provider]]
+    key = envKey && envKey.trim().length > 0 ? envKey.trim() : null
+  }
+
+  return key
+}
+
+async function getOpenAiClient(orgId) {
+  const key = await getOrgApiKey('openai', orgId)
+  if (!key) throw new Error('OPENAI_API_KEY is not set')
+  const cacheKey = `openai:${orgId || 'env'}:${key}`
+  if (openaiClientCache.has(cacheKey)) return openaiClientCache.get(cacheKey)
+  const client = new OpenAI({ apiKey: key })
+  openaiClientCache.set(cacheKey, client)
+  return client
+}
+
+async function getAnthropicClient(orgId) {
+  const key = await getOrgApiKey('anthropic', orgId)
+  if (!key) throw new Error('ANTHROPIC_API_KEY is not set')
+  const cacheKey = `anthropic:${orgId || 'env'}:${key}`
+  if (anthropicClientCache.has(cacheKey)) return anthropicClientCache.get(cacheKey)
+  const client = new Anthropic({ apiKey: key })
+  anthropicClientCache.set(cacheKey, client)
+  return client
+}
+
+async function loadGlobalPromptBlocks() {
+  const { rows } = await pool.query(
+    `
+    SELECT type, content, metadata
+    FROM prompt_blocks
+    WHERE is_active = true
+      AND scope = 'global'
+  `
+  )
+  const map = new Map()
+  for (const row of rows || []) {
+    let meta = row?.metadata || null
+    if (meta && typeof meta === 'string') {
+      try {
+        meta = JSON.parse(meta)
+      } catch {
+        meta = null
+      }
+    }
+    const key = meta?.key || row?.type
+    if (key) map.set(key, row.content)
+  }
+  return map
+}
+
+function getPromptBlockContent(blocks, key) {
+  if (blocks && blocks.has(key)) return blocks.get(key)
+  return DEFAULT_PROMPT_BLOCKS[key] || ''
+}
+
+function applyTemplate(template, vars) {
+  return Object.entries(vars).reduce((acc, [key, value]) => {
+    const re = new RegExp(`{{\\s*${key}\\s*}}`, 'gi')
+    const safe = typeof value === 'string' ? value : String(value ?? '')
+    return acc.replace(re, () => safe)
+  }, template)
 }
 
 async function claimNextJob() {
@@ -246,8 +406,8 @@ async function extractTextFromFile(filePath, mime, filename) {
   return ''
 }
 
-async function transcribeWhisper(audioPath) {
-  const res = await openai.audio.transcriptions.create({
+async function transcribeWhisper(openaiClient, audioPath) {
+  const res = await openaiClient.audio.transcriptions.create({
     file: fs.createReadStream(audioPath),
     model: 'whisper-1',
   })
@@ -255,13 +415,11 @@ async function transcribeWhisper(audioPath) {
   return { text }
 }
 
-async function summarizeSwipe({ transcript, url }) {
-  const prompt = `Return JSON with keys: title, summary.\n\nURL: ${url}\n\nTranscript:\n${transcript.slice(0, 12000)}`
-  const message = await anthropic.messages.create({
+async function summarizeSwipe({ anthropicClient, system, prompt }) {
+  const message = await anthropicClient.messages.create({
     model: SUMMARIZE_MODEL,
     max_tokens: 350,
-    system:
-      'You create short swipe titles and high-signal summaries for ad/transcript libraries. Output ONLY JSON.',
+    system,
     messages: [{ role: 'user', content: prompt }],
   })
   const text = message.content.find((c) => c.type === 'text')?.text || ''
@@ -281,12 +439,11 @@ async function summarizeSwipe({ transcript, url }) {
   }
 }
 
-async function summarizeResearch({ title, text }) {
-  const prompt = `Return JSON with keys: title, summary, keywords (array of 3-6).\n\nTitle: ${title}\n\nText:\n${text.slice(0, 14000)}`
-  const message = await anthropic.messages.create({
+async function summarizeResearch({ anthropicClient, system, prompt }) {
+  const message = await anthropicClient.messages.create({
     model: SUMMARIZE_MODEL,
     max_tokens: 350,
-    system: 'You summarize research notes into short, useful briefs. Output ONLY JSON.',
+    system,
     messages: [{ role: 'user', content: prompt }],
   })
   const content = message.content.find((c) => c.type === 'text')?.text || ''
@@ -426,6 +583,11 @@ async function processIngestMetaAd(job) {
     throw new Error('Invalid job input (missing swipe_id/product_id/url)')
   }
 
+  const orgId = await getOrgIdForProduct(productId)
+  const openaiClient = await getOpenAiClient(orgId)
+  const anthropicClient = await getAnthropicClient(orgId)
+  const promptBlocks = await loadGlobalPromptBlocks()
+
   log('Scraping video URL...', url)
   const scraped = await scrapeMetaAdVideo(url)
   if (!scraped.videoUrl) throw new Error('Failed to locate MP4 URL from Meta page')
@@ -449,10 +611,20 @@ async function processIngestMetaAd(job) {
     })
 
     log('Transcribing (Whisper)...')
-    const transcript = await transcribeWhisper(audioPath)
+    const transcript = await transcribeWhisper(openaiClient, audioPath)
 
     log('Summarizing...')
-    const summary = await summarizeSwipe({ transcript: transcript.text, url })
+    const swipeSystem = getPromptBlockContent(promptBlocks, 'swipe_summarizer_system')
+    const swipePromptTemplate = getPromptBlockContent(promptBlocks, 'swipe_summarizer_prompt')
+    const swipePrompt = applyTemplate(swipePromptTemplate, {
+      url,
+      transcript: transcript.text.slice(0, 12000),
+    })
+    const summary = await summarizeSwipe({
+      anthropicClient,
+      system: swipeSystem,
+      prompt: swipePrompt,
+    })
 
     const meta = {
       ...scraped.meta,
@@ -514,6 +686,10 @@ async function processIngestResearchFile(job) {
     throw new Error('Invalid job input (missing research_item_id/product_id/r2_key)')
   }
 
+  const orgId = await getOrgIdForProduct(productId)
+  const anthropicClient = await getAnthropicClient(orgId)
+  const promptBlocks = await loadGlobalPromptBlocks()
+
   const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'brandlab-research-'))
   const filePath = path.join(tmpDir, filename || 'upload')
 
@@ -528,7 +704,17 @@ async function processIngestResearchFile(job) {
     }
 
     log('Summarizing research...')
-    const summary = await summarizeResearch({ title: filename, text })
+    const researchSystem = getPromptBlockContent(promptBlocks, 'research_summarizer_system')
+    const researchPromptTemplate = getPromptBlockContent(promptBlocks, 'research_summarizer_prompt')
+    const researchPrompt = applyTemplate(researchPromptTemplate, {
+      title: filename,
+      text: text.slice(0, 14000),
+    })
+    const summary = await summarizeResearch({
+      anthropicClient,
+      system: researchSystem,
+      prompt: researchPrompt,
+    })
 
     await pool.query(
       `

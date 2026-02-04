@@ -31,25 +31,11 @@ export async function GET(request: NextRequest, { params }: Params) {
       WHERE user_organization_access.user_id = ${id}
     `
 
-    const brandAccess = await sql`
-      SELECT
-        user_brand_access.brand_id,
-        brands.id AS brand_id,
-        brands.name AS brand_name
-      FROM user_brand_access
-      JOIN brands ON brands.id = user_brand_access.brand_id
-      WHERE user_brand_access.user_id = ${id}
-    `
-
     const response = {
       ...user,
       user_organization_access: orgAccess.map((row) => ({
         organization_id: row.organization_id,
         organizations: { id: row.org_id, name: row.org_name },
-      })),
-      user_brand_access: brandAccess.map((row) => ({
-        brand_id: row.brand_id,
-        brands: { id: row.brand_id, name: row.brand_name },
       })),
     }
 

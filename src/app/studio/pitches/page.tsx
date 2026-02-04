@@ -72,12 +72,12 @@ export default function PitchesPage() {
         setCreating(false)
         resetForm()
       } else {
-        console.error('Failed to create pitch:', data)
-        alert(`Failed to create pitch: ${data.error || 'Unknown error'}`)
+        console.error('Failed to create positioning:', data)
+        alert(`Failed to create positioning: ${data.error || 'Unknown error'}`)
       }
     } catch (err) {
-      console.error('Error creating pitch:', err)
-      alert('Failed to create pitch - check console for details')
+      console.error('Error creating positioning:', err)
+      alert('Failed to create positioning - check console for details')
     }
     setSaving(false)
   }
@@ -102,7 +102,7 @@ export default function PitchesPage() {
   }
 
   async function handleDelete(id: string) {
-    if (!confirm('Delete this pitch?')) return
+    if (!confirm('Delete this positioning?')) return
     await fetch(`/api/pitches/${id}`, { method: 'DELETE' })
     setPitches(prev => prev.filter(p => p.id !== id))
   }
@@ -134,9 +134,9 @@ export default function PitchesPage() {
     <div className="p-6 h-full flex flex-col max-w-4xl">
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-semibold text-gray-900">Pitches</h1>
+          <h1 className="text-2xl font-semibold text-gray-900">Positioning</h1>
           <p className="text-sm text-gray-500 mt-1">
-            Create different angles and value propositions for your ads
+            Create different angles and value propositions your agent can use
           </p>
         </div>
         {!isFormOpen && (
@@ -147,7 +147,7 @@ export default function PitchesPage() {
             }}
             className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 text-sm font-medium transition-colors"
           >
-            + New Pitch
+            + New Positioning
           </button>
         )}
       </div>
@@ -156,7 +156,7 @@ export default function PitchesPage() {
       {isFormOpen && (
         <div className="mb-6 p-5 bg-white rounded-xl border border-gray-200 space-y-4">
           <h2 className="font-medium text-gray-900">
-            {creating ? 'New Pitch' : 'Edit Pitch'}
+            {creating ? 'New Positioning' : 'Edit Positioning'}
           </h2>
 
           <div>
@@ -172,7 +172,7 @@ export default function PitchesPage() {
 
           <div>
             <label className="block text-xs text-gray-500 mb-1">
-              Pitch Content <span className="text-gray-400">(the angle/hook/value proposition)</span>
+              Positioning Content <span className="text-gray-400">(angle / hook / value proposition)</span>
             </label>
             <textarea
               value={content}
@@ -189,7 +189,7 @@ export default function PitchesPage() {
               disabled={saving || !name.trim() || !content.trim()}
               className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 text-sm font-medium disabled:opacity-50 transition-colors"
             >
-              {saving ? 'Saving...' : creating ? 'Create Pitch' : 'Save Changes'}
+              {saving ? 'Saving...' : creating ? 'Create Positioning' : 'Save Changes'}
             </button>
             <button
               onClick={() => {
@@ -205,7 +205,7 @@ export default function PitchesPage() {
         </div>
       )}
 
-      {/* Pitches List */}
+      {/* Positioning List */}
       {loading ? (
         <p className="text-gray-400">Loading...</p>
       ) : (
@@ -254,9 +254,9 @@ export default function PitchesPage() {
 
           {pitches.length === 0 && !creating && (
             <div className="text-center py-12">
-              <p className="text-gray-400 mb-2">No pitches yet</p>
+              <p className="text-gray-400 mb-2">No positioning yet</p>
               <p className="text-sm text-gray-400">
-                Create pitches to define different angles for your ad copy
+                Create positioning entries to define angles for your ad copy
               </p>
             </div>
           )}

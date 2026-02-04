@@ -1,16 +1,16 @@
 import type { Metadata } from "next"
-import { Fragment_Mono, Instrument_Serif, Spline_Sans } from "next/font/google"
+import { Bricolage_Grotesque, Fragment_Mono, Plus_Jakarta_Sans } from "next/font/google"
 import "./globals.css"
 
-const splineSans = Spline_Sans({
+const plusJakarta = Plus_Jakarta_Sans({
   variable: "--font-editor-sans",
   subsets: ["latin"],
 })
 
-const instrumentSerif = Instrument_Serif({
+// Use as our "display" font (wired to the existing serif variable for convenience).
+const bricolage = Bricolage_Grotesque({
   variable: "--font-editor-serif",
   subsets: ["latin"],
-  weight: "400",
 })
 
 const fragmentMono = Fragment_Mono({
@@ -32,7 +32,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body
-        className={`${splineSans.variable} ${instrumentSerif.variable} ${fragmentMono.variable} antialiased`}
+        className={`${plusJakarta.variable} ${bricolage.variable} ${fragmentMono.variable} antialiased`}
       >
         {children}
       </body>

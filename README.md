@@ -24,6 +24,27 @@ This repo includes `netlify.toml` and uses `@netlify/plugin-nextjs`.
    - `NETLIFY_DATABASE_URL`
    - `AUTH_SECRET`
    - `ANTHROPIC_API_KEY`
+   - `ANTHROPIC_AGENT_MODEL` (optional)
+   - `R2_ENDPOINT`
+   - `R2_ACCESS_KEY_ID`
+   - `R2_SECRET_ACCESS_KEY`
+   - `R2_BUCKET`
+   - `R2_REGION` (optional, default `auto`)
+
+## Migrations (Neon)
+
+Apply migrations to your Neon database:
+
+```bash
+node scripts/migrate-neon.js
+```
+
+## Media Worker (Render)
+
+Heavy swipe ingestion (Meta Ad Library → download video → Whisper transcript → upload to R2) runs in a separate worker:
+
+- Service: `services/media-worker`
+- Docs: `services/media-worker/README.md`
 
 ## Notes
 

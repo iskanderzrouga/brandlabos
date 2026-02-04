@@ -154,17 +154,108 @@ async function applyMigrations(sql) {
   const migrationsDir = path.join(__dirname, '..', 'supabase', 'migrations')
   const files = fs.readdirSync(migrationsDir).filter((f) => f.endsWith('.sql')).sort()
 
-  const existing = await sql.query("SELECT to_regclass('public.organizations') AS exists")
-  if (existing[0]?.exists) {
-    return
+  // Track applied migrations so we can apply incrementally over time.
+  await sql.query(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      filename TEXT PRIMARY KEY,
+      applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `)
+
+  const appliedRows = await sql.query('SELECT filename FROM schema_migrations')
+  const applied = new Set(appliedRows.map((r) => r.filename))
+
+  // If this DB predates schema_migrations, baseline the already-present schema
+  // to avoid re-running non-idempotent migrations like CREATE TYPE.
+  if (applied.size === 0) {
+    const baselines = [
+      {
+        filename: '001_initial_schema.sql',
+        check: async () => {
+          const rows = await sql.query("SELECT to_regclass('public.organizations') AS v")
+          return Boolean(rows[0]?.v)
+        },
+      },
+      {
+        filename: '002_simplify_avatars.sql',
+        check: async () => {
+          const rows = await sql.query(`
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'avatars'
+              AND column_name = 'content'
+            LIMIT 1
+          `)
+          return rows.length > 0
+        },
+      },
+      {
+        filename: '003_add_pitches.sql',
+        check: async () => {
+          const rows = await sql.query("SELECT to_regclass('public.pitches') AS v")
+          return Boolean(rows[0]?.v)
+        },
+      },
+      {
+        filename: '004_user_access_management.sql',
+        check: async () => {
+          const rows = await sql.query("SELECT to_regclass('public.app_users') AS v")
+          return Boolean(rows[0]?.v)
+        },
+      },
+      {
+        filename: '005_add_password_hash.sql',
+        check: async () => {
+          const rows = await sql.query(`
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'app_users'
+              AND column_name = 'password_hash'
+            LIMIT 1
+          `)
+          return rows.length > 0
+        },
+      },
+      {
+        filename: '006_swipes_agent_jobs.sql',
+        check: async () => {
+          const rows = await sql.query("SELECT to_regclass('public.swipes') AS v")
+          return Boolean(rows[0]?.v)
+        },
+      },
+    ]
+
+    for (const b of baselines) {
+      if (!files.includes(b.filename)) continue
+      const exists = await b.check()
+      if (!exists) continue
+      await sql.query(
+        'INSERT INTO schema_migrations (filename) VALUES ($1) ON CONFLICT (filename) DO NOTHING',
+        [b.filename]
+      )
+      applied.add(b.filename)
+    }
   }
 
   for (const file of files) {
+    if (applied.has(file)) continue
+
     const fullPath = path.join(migrationsDir, file)
     const content = fs.readFileSync(fullPath, 'utf8')
     const statements = splitSqlStatements(content)
-    for (const statement of statements) {
-      await sql.query(statement)
+
+    await sql.query('BEGIN')
+    try {
+      for (const statement of statements) {
+        await sql.query(statement)
+      }
+      await sql.query('INSERT INTO schema_migrations (filename) VALUES ($1)', [file])
+      await sql.query('COMMIT')
+    } catch (err) {
+      await sql.query('ROLLBACK')
+      throw err
     }
   }
 }

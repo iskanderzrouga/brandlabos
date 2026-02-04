@@ -21,6 +21,8 @@ interface AppContextType {
   loading: boolean
   user: AuthUser | null
   signOut: () => Promise<void>
+  openContextDrawer: () => void
+  setContextDrawerExtra: (extra: ReactNode | null) => void
 }
 
 interface Org { id: string; name: string; slug: string }
@@ -37,7 +39,7 @@ export function useAppContext() {
 }
 
 // ============================================================================
-// APP SHELL COMPONENT - Light Mode Creator Studio
+// APP SHELL COMPONENT - Joinco-lite Studio
 // ============================================================================
 
 export function AppShell({ children }: { children: ReactNode }) {
@@ -51,6 +53,11 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [selectedProduct, setSelectedProduct] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [user, setUser] = useState<AuthUser | null>(null)
+
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(true)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [contextDrawerOpen, setContextDrawerOpen] = useState(false)
+  const [contextDrawerExtra, setContextDrawerExtra] = useState<ReactNode | null>(null)
 
   // Fetch user on mount
   useEffect(() => {
@@ -131,19 +138,20 @@ export function AppShell({ children }: { children: ReactNode }) {
       })
   }, [selectedBrand])
 
+  const selectedProductName = products.find((p) => p.id === selectedProduct)?.name || null
+  const selectedBrandName = brands.find((b) => b.id === selectedBrand)?.name || null
+
   const navItems = [
-    { label: 'Generate', href: '/studio', icon: '⚡' },
-    { label: 'Avatars', href: '/studio/avatars', icon: '👤' },
-    { label: 'Pitches', href: '/studio/pitches', icon: '🎯' },
-    { label: 'Prompt Blocks', href: '/studio/prompts', icon: '📝' },
-    { label: 'History', href: '/studio/history', icon: '📜' },
+    { label: 'Generate', href: '/studio', icon: <SparkIcon /> },
+    { label: 'Swipes', href: '/studio/swipes', icon: <FilmIcon /> },
+    { label: 'History', href: '/studio/history', icon: <ClockIcon /> },
   ]
 
   const settingsItems = [
-    { label: 'Organizations', href: '/studio/settings/organizations', icon: '🏢' },
-    { label: 'Brands', href: '/studio/settings/brands', icon: '🏷️' },
-    { label: 'Products', href: '/studio/settings/products', icon: '📦' },
-    { label: 'Users', href: '/admin/users', icon: '👥' },
+    { label: 'Organizations', href: '/studio/settings/organizations', icon: <OrgIcon /> },
+    { label: 'Brands', href: '/studio/settings/brands', icon: <TagIcon /> },
+    { label: 'Products', href: '/studio/settings/products', icon: <BoxIcon /> },
+    { label: 'Users', href: '/admin/users', icon: <UsersIcon /> },
   ]
 
   return (
@@ -161,141 +169,154 @@ export function AppShell({ children }: { children: ReactNode }) {
         loading,
         user,
         signOut,
+        openContextDrawer: () => setContextDrawerOpen(true),
+        setContextDrawerExtra,
       }}
     >
       <div className="min-h-screen bg-[var(--editor-bg)] text-[var(--editor-ink)] flex">
         {/* Sidebar */}
-        <aside className="w-64 bg-[var(--editor-rail)] text-[var(--editor-rail-ink)] flex flex-col border-r border-white/10">
-          {/* Logo */}
-          <div className="p-5 border-b border-white/10">
-            <Link href="/studio" className="flex items-center gap-3">
+        <aside
+          className={`bg-[var(--editor-rail)] text-[var(--editor-rail-ink)] flex flex-col border-r border-white/10 transition-[width] duration-200 ${
+            sidebarCollapsed ? 'w-[78px]' : 'w-64'
+          }`}
+        >
+          {/* Brand / Toggle */}
+          <div className="h-16 px-4 flex items-center justify-between border-b border-white/10">
+            <Link href="/studio" className="flex items-center gap-3 min-w-0">
               <div className="w-10 h-10 rounded-2xl bg-[var(--editor-accent)] text-white flex items-center justify-center font-semibold">
                 BL
               </div>
-              <div>
-                <p className="text-[10px] uppercase tracking-[0.35em] text-white/60">Studio</p>
-                <p className="font-serif text-lg text-white">BrandLab</p>
-              </div>
+              {!sidebarCollapsed && (
+                <div className="min-w-0">
+                  <p className="text-[10px] uppercase tracking-[0.35em] text-white/60">Studio</p>
+                  <p className="font-serif text-lg text-white truncate">BrandLab</p>
+                </div>
+              )}
             </Link>
+
+            <button
+              onClick={() => {
+                setSidebarCollapsed((v) => !v)
+                if (!sidebarCollapsed) setSettingsOpen(false)
+              }}
+              className="w-9 h-9 grid place-items-center rounded-xl hover:bg-white/10 transition-colors"
+              title={sidebarCollapsed ? 'Open sidebar' : 'Collapse sidebar'}
+              aria-label="Toggle sidebar"
+            >
+              <HamburgerIcon />
+            </button>
           </div>
 
           {/* Main Nav */}
-          <nav className="flex-1 p-4 space-y-1">
-            <p className="px-3 text-[10px] uppercase tracking-[0.3em] text-white/40 mb-3">
-              Workspace
-            </p>
-            {navItems.map(item => (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={`flex items-center gap-3 px-3 py-2 rounded-xl text-sm transition-all border ${
-                  pathname === item.href
-                    ? 'bg-white/10 text-white border-white/20 shadow-[0_12px_30px_-20px_rgba(0,0,0,0.6)]'
+          <nav className="flex-1 px-3 py-4 space-y-2">
+            {!sidebarCollapsed && (
+              <p className="px-3 text-[10px] uppercase tracking-[0.32em] text-white/40">
+                Workspace
+              </p>
+            )}
+            <div className="space-y-1">
+              {navItems.map((item) => {
+                const active = pathname === item.href
+                return (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    title={sidebarCollapsed ? item.label : undefined}
+                    className={`flex items-center gap-3 px-3 py-2 rounded-2xl text-sm transition-all border ${
+                      active
+                        ? 'bg-white/10 text-white border-white/20 shadow-[0_18px_40px_-26px_rgba(0,0,0,0.65)]'
+                        : 'text-white/70 border-transparent hover:text-white hover:bg-white/5'
+                    }`}
+                  >
+                    <span className="w-5 h-5">{item.icon}</span>
+                    {!sidebarCollapsed && <span className="font-medium">{item.label}</span>}
+                  </Link>
+                )
+              })}
+            </div>
+
+            <div className="pt-3 mt-3 border-t border-white/10">
+              <button
+                onClick={() => {
+                  if (sidebarCollapsed) {
+                    setSidebarCollapsed(false)
+                    setSettingsOpen(true)
+                    return
+                  }
+                  setSettingsOpen((v) => !v)
+                }}
+                className={`w-full flex items-center gap-3 px-3 py-2 rounded-2xl text-sm transition-all border ${
+                  settingsOpen && !sidebarCollapsed
+                    ? 'bg-white/10 text-white border-white/20'
                     : 'text-white/70 border-transparent hover:text-white hover:bg-white/5'
                 }`}
+                title={sidebarCollapsed ? 'Settings' : undefined}
               >
-                <span className="text-lg">{item.icon}</span>
-                <span className="font-medium">{item.label}</span>
-              </Link>
-            ))}
+                <span className="w-5 h-5"><GearIcon /></span>
+                {!sidebarCollapsed && (
+                  <>
+                    <span className="font-medium flex-1 text-left">Settings</span>
+                    <span className="text-xs text-white/60">{settingsOpen ? '-' : '+'}</span>
+                  </>
+                )}
+              </button>
 
-            <div className="pt-4 mt-4 border-t border-white/10">
-              <p className="px-3 text-[10px] text-white/40 uppercase tracking-[0.3em] mb-2">
-                Settings
-              </p>
-              {settingsItems.map(item => (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  className={`flex items-center gap-3 px-3 py-2 rounded-xl text-sm transition-all border ${
-                    pathname === item.href
-                      ? 'bg-white/10 text-white border-white/20'
-                      : 'text-white/70 border-transparent hover:text-white hover:bg-white/5'
-                  }`}
-                >
-                  <span className="text-lg">{item.icon}</span>
-                  <span className="font-medium">{item.label}</span>
-                </Link>
-              ))}
+              {settingsOpen && !sidebarCollapsed && (
+                <div className="mt-2 space-y-1">
+                  {settingsItems.map((item) => {
+                    const active = pathname === item.href || pathname.startsWith(item.href + '/')
+                    return (
+                      <Link
+                        key={item.href}
+                        href={item.href}
+                        className={`flex items-center gap-3 px-3 py-2 rounded-2xl text-sm transition-all border ${
+                          active
+                            ? 'bg-white/10 text-white border-white/20'
+                            : 'text-white/70 border-transparent hover:text-white hover:bg-white/5'
+                        }`}
+                      >
+                        <span className="w-5 h-5">{item.icon}</span>
+                        <span className="font-medium">{item.label}</span>
+                      </Link>
+                    )
+                  })}
+                </div>
+              )}
             </div>
           </nav>
-
-          <div className="p-4 border-t border-white/10">
-            <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
-              <p className="text-xs uppercase tracking-[0.3em] text-white/50">Status</p>
-              <p className="mt-2 text-sm text-white">Copy engine online</p>
-              <p className="text-xs text-white/60 mt-1">Latency: 1.6s</p>
-            </div>
-          </div>
         </aside>
 
         {/* Main Content */}
         <div className="flex-1 flex flex-col">
           {/* Top Bar */}
-          <header className="h-16 border-b border-[var(--editor-border)] bg-[var(--editor-panel)]/80 backdrop-blur flex items-center px-6 gap-5">
-            <div className="flex items-center gap-3">
-              <span className="text-[10px] uppercase tracking-[0.4em] text-[var(--editor-ink-muted)]">
-                Workspace
+          <header className="h-16 border-b border-[var(--editor-border)] bg-[var(--editor-panel)]/70 backdrop-blur flex items-center px-6 gap-4">
+            <button
+              onClick={() => setContextDrawerOpen(true)}
+              className="editor-button-ghost text-sm flex items-center gap-2"
+              title="Select org/brand/product"
+            >
+              <span className="w-4 h-4"><ContextIcon /></span>
+              <span className="font-semibold">
+                {selectedProductName ? selectedProductName : 'Select context'}
               </span>
-              <div className="h-5 w-px bg-[var(--editor-border)]" />
-            </div>
-
-            {/* Org Selector */}
-            <div className="flex items-center gap-2">
-              <span className="text-[10px] uppercase tracking-[0.3em] text-[var(--editor-ink-muted)]">Org</span>
-              <select
-                value={selectedOrg || ''}
-                onChange={e => setSelectedOrg(e.target.value || null)}
-                className="editor-input text-sm min-w-[140px] bg-[var(--editor-panel)]"
-              >
-                {organizations.map(o => (
-                  <option key={o.id} value={o.id}>{o.name}</option>
-                ))}
-              </select>
-            </div>
-
-            {/* Brand Selector */}
-            <div className="flex items-center gap-2">
-              <span className="text-[10px] uppercase tracking-[0.3em] text-[var(--editor-ink-muted)]">Brand</span>
-              <select
-                value={selectedBrand || ''}
-                onChange={e => setSelectedBrand(e.target.value || null)}
-                className="editor-input text-sm min-w-[140px] bg-[var(--editor-panel)]"
-                disabled={brands.length === 0}
-              >
-                {brands.length === 0 && <option value="">No brands</option>}
-                {brands.map(b => (
-                  <option key={b.id} value={b.id}>{b.name}</option>
-                ))}
-              </select>
-            </div>
-
-            {/* Product Selector */}
-            <div className="flex items-center gap-2">
-              <span className="text-[10px] uppercase tracking-[0.3em] text-[var(--editor-ink-muted)]">Product</span>
-              <select
-                value={selectedProduct || ''}
-                onChange={e => setSelectedProduct(e.target.value || null)}
-                className="editor-input text-sm min-w-[160px] bg-[var(--editor-panel)]"
-                disabled={products.length === 0}
-              >
-                {products.length === 0 && <option value="">No products</option>}
-                {products.map(p => (
-                  <option key={p.id} value={p.id}>{p.name}</option>
-                ))}
-              </select>
-            </div>
+              {!selectedProductName && (
+                <span className="text-[var(--editor-ink-muted)] font-medium">
+                  (org/brand/product)
+                </span>
+              )}
+              {selectedBrandName && selectedProductName && (
+                <span className="text-[var(--editor-ink-muted)] font-medium">
+                  {selectedBrandName}
+                </span>
+              )}
+            </button>
 
             <div className="flex-1" />
 
-            {/* User Menu */}
             {user && (
               <div className="flex items-center gap-3">
                 <span className="text-sm text-[var(--editor-ink-muted)]">{user.email}</span>
-                <button
-                  onClick={signOut}
-                  className="editor-button-ghost text-sm"
-                >
+                <button onClick={signOut} className="editor-button-ghost text-sm">
                   Sign out
                 </button>
               </div>
@@ -308,6 +329,272 @@ export function AppShell({ children }: { children: ReactNode }) {
           </main>
         </div>
       </div>
+
+      {/* Context Drawer */}
+      {contextDrawerOpen && (
+        <div className="fixed inset-0 z-50">
+          <div
+            className="absolute inset-0 bg-black/25 backdrop-blur-sm"
+            onClick={() => setContextDrawerOpen(false)}
+          />
+          <div className="absolute right-0 top-0 h-full w-[440px] max-w-[92vw] bg-[var(--editor-panel)] border-l border-[var(--editor-border)] shadow-[0_30px_60px_-40px_var(--editor-shadow)]">
+            <div className="h-16 px-6 border-b border-[var(--editor-border)] flex items-center justify-between">
+              <div>
+                <p className="text-[10px] uppercase tracking-[0.3em] text-[var(--editor-ink-muted)]">
+                  Context
+                </p>
+                <p className="font-serif text-lg">Workspace</p>
+              </div>
+              <button
+                onClick={() => setContextDrawerOpen(false)}
+                className="w-10 h-10 rounded-2xl hover:bg-black/5 grid place-items-center"
+                aria-label="Close context"
+              >
+                <span className="text-xl leading-none">x</span>
+              </button>
+            </div>
+
+            <div className="p-6 space-y-5 overflow-auto h-[calc(100%-4rem)]">
+              <div>
+                <label className="block text-xs uppercase tracking-[0.22em] text-[var(--editor-ink-muted)] mb-2">
+                  Organization
+                </label>
+                <select
+                  value={selectedOrg || ''}
+                  onChange={(e) => setSelectedOrg(e.target.value || null)}
+                  className="editor-input w-full text-sm"
+                >
+                  {organizations.map((o) => (
+                    <option key={o.id} value={o.id}>
+                      {o.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs uppercase tracking-[0.22em] text-[var(--editor-ink-muted)] mb-2">
+                  Brand
+                </label>
+                <select
+                  value={selectedBrand || ''}
+                  onChange={(e) => setSelectedBrand(e.target.value || null)}
+                  className="editor-input w-full text-sm"
+                  disabled={brands.length === 0}
+                >
+                  {brands.length === 0 && <option value="">No brands</option>}
+                  {brands.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs uppercase tracking-[0.22em] text-[var(--editor-ink-muted)] mb-2">
+                  Product
+                </label>
+                <select
+                  value={selectedProduct || ''}
+                  onChange={(e) => setSelectedProduct(e.target.value || null)}
+                  className="editor-input w-full text-sm"
+                  disabled={products.length === 0}
+                >
+                  {products.length === 0 && <option value="">No products</option>}
+                  {products.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {contextDrawerExtra && (
+                <div className="pt-6 mt-6 border-t border-[var(--editor-border)]">
+                  {contextDrawerExtra}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </AppContext.Provider>
+  )
+}
+
+function HamburgerIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5" aria-hidden="true">
+      <path
+        d="M5 7h14M5 12h14M5 17h14"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+    </svg>
+  )
+}
+
+function SparkIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5" aria-hidden="true">
+      <path
+        d="M13 2l1.2 6.2L20 10l-5.8 1.8L13 18l-1.2-6.2L6 10l5.8-1.8L13 2z"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
+function FilmIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5" aria-hidden="true">
+      <path
+        d="M4 6h16v12H4V6z"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M8 6v12M16 6v12M4 10h4M4 14h4M16 10h4M16 14h4"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      />
+    </svg>
+  )
+}
+
+function ClockIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5" aria-hidden="true">
+      <path
+        d="M12 21a9 9 0 110-18 9 9 0 010 18z"
+        stroke="currentColor"
+        strokeWidth="1.8"
+      />
+      <path
+        d="M12 7v6l4 2"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
+function GearIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5" aria-hidden="true">
+      <path
+        d="M12 15.5a3.5 3.5 0 110-7 3.5 3.5 0 010 7z"
+        stroke="currentColor"
+        strokeWidth="1.8"
+      />
+      <path
+        d="M19.4 15a7.9 7.9 0 000-6l-2.1.4a6.2 6.2 0 00-1.1-1.1L16.6 6a7.9 7.9 0 00-6 0l.4 2.3a6.2 6.2 0 00-1.1 1.1L7.8 9a7.9 7.9 0 000 6l2.1-.4a6.2 6.2 0 001.1 1.1l-.4 2.3a7.9 7.9 0 006 0l-.4-2.3a6.2 6.2 0 001.1-1.1l2.1.4z"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
+function ContextIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4" aria-hidden="true">
+      <path
+        d="M4 7.5h16M7 12h10M10 16.5h4"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      />
+    </svg>
+  )
+}
+
+function OrgIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5" aria-hidden="true">
+      <path
+        d="M4 20V7l8-4 8 4v13H4z"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M9 20v-6h6v6"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
+function TagIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5" aria-hidden="true">
+      <path
+        d="M20 13l-7 7-10-10V3h7l10 10z"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M7.5 7.5h.01"
+        stroke="currentColor"
+        strokeWidth="3"
+        strokeLinecap="round"
+      />
+    </svg>
+  )
+}
+
+function BoxIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5" aria-hidden="true">
+      <path
+        d="M4 7l8-4 8 4v10l-8 4-8-4V7z"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M4 7l8 4 8-4"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M12 11v10"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      />
+    </svg>
+  )
+}
+
+function UsersIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5" aria-hidden="true">
+      <path
+        d="M16 11a4 4 0 10-8 0 4 4 0 008 0z"
+        stroke="currentColor"
+        strokeWidth="1.8"
+      />
+      <path
+        d="M4 21a8 8 0 0116 0"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      />
+    </svg>
   )
 }

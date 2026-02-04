@@ -1,21 +1,21 @@
 @import "tailwindcss";
 
 :root {
-  --editor-bg: #fbfbf8;
+  --editor-bg: #fdfdfb;
   --editor-panel: #ffffff;
-  --editor-panel-muted: #f4f6f2;
-  --editor-ink: #0a1f1c;
-  --editor-ink-muted: #2f5f54;
-  --editor-border: rgba(10, 31, 28, 0.12);
+  --editor-panel-muted: #f6f6f1;
+  --editor-ink: #12211e;
+  --editor-ink-muted: #4c5f5b;
+  --editor-border: rgba(18, 33, 30, 0.12);
   --editor-rail: #0a1f1c;
-  --editor-rail-ink: #f2fff9;
-  --editor-accent: #00bfa6;
-  --editor-accent-strong: #008f7a;
-  --editor-accent-soft: rgba(0, 191, 166, 0.14);
-  --editor-warning: #bdff00;
-  --editor-success: #00bfa6;
-  --editor-shadow: rgba(10, 31, 28, 0.08);
-  --editor-card-shadow: rgba(10, 31, 28, 0.12);
+  --editor-rail-ink: #f4fbf8;
+  --editor-accent: #2a9d8f;
+  --editor-accent-strong: #1f7f73;
+  --editor-accent-soft: rgba(42, 157, 143, 0.14);
+  --editor-warning: #f2c97b;
+  --editor-success: #2a9d8f;
+  --editor-shadow: rgba(18, 33, 30, 0.06);
+  --editor-card-shadow: rgba(18, 33, 30, 0.1);
 
   --background: var(--editor-bg);
   --foreground: var(--editor-ink);
@@ -38,9 +38,8 @@ body {
   color: var(--editor-ink);
   font-family: var(--font-editor-sans), sans-serif;
   background-image:
-    radial-gradient(circle at 14% 18%, rgba(0, 191, 166, 0.06), transparent 42%),
-    radial-gradient(circle at 88% -10%, rgba(189, 255, 0, 0.08), transparent 38%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0));
+    radial-gradient(circle at 14% 18%, rgba(42, 157, 143, 0.04), transparent 45%),
+    radial-gradient(circle at 88% -10%, rgba(242, 201, 123, 0.05), transparent 40%);
   background-attachment: fixed;
 }
 
@@ -72,7 +71,7 @@ body {
   background: var(--editor-panel);
   border: 1px solid var(--editor-border);
   border-radius: 18px;
-  box-shadow: 0 22px 44px -34px var(--editor-shadow);
+  box-shadow: 0 18px 36px -30px var(--editor-shadow);
 }
 
 .editor-panel-soft {
@@ -124,13 +123,13 @@ body {
   border-radius: 999px;
   padding: 0.66rem 1.5rem;
   font-weight: 600;
-  box-shadow: 0 18px 30px -22px rgba(0, 191, 166, 0.65);
+  box-shadow: 0 16px 28px -22px rgba(42, 157, 143, 0.5);
   transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
 
 .editor-button:hover {
   transform: translateY(-1px);
-  box-shadow: 0 18px 34px -20px rgba(0, 191, 166, 0.55);
+  box-shadow: 0 18px 34px -20px rgba(42, 157, 143, 0.45);
 }
 
 .editor-button:disabled {
@@ -173,11 +172,38 @@ body {
 }
 
 .editor-tag--note {
-  background: rgba(0, 191, 166, 0.12);
+  background: rgba(42, 157, 143, 0.12);
   color: var(--editor-accent-strong);
 }
 
 .editor-tag--warning {
-  background: rgba(189, 255, 0, 0.18);
-  color: rgba(10, 31, 28, 0.9);
+  background: rgba(242, 201, 123, 0.2);
+  color: rgba(18, 33, 30, 0.9);
+}
+
+.chat-chip {
+  background: var(--editor-panel-muted);
+  color: var(--editor-ink);
+  border: 1px solid var(--editor-border);
+  border-radius: 999px;
+  padding: 0.28rem 0.7rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.chat-chip--muted {
+  color: var(--editor-ink-muted);
+}
+
+.chat-chip--accent {
+  background: rgba(42, 157, 143, 0.12);
+  color: var(--editor-accent-strong);
+  border-color: rgba(42, 157, 143, 0.28);
+}
+
+.chat-chip--warning {
+  background: rgba(242, 201, 123, 0.22);
+  color: rgba(18, 33, 30, 0.9);
+  border-color: rgba(242, 201, 123, 0.4);
 }

@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAppContext } from '@/components/app-shell'
 import { CONTENT_TYPES } from '@/lib/content-types'
 
@@ -34,6 +34,7 @@ type SwipeRow = {
 
 type AvatarRow = { id: string; name: string; content: string; is_active: boolean }
 type PitchRow = { id: string; name: string; content: string; is_active: boolean }
+type SkillOption = { id: string; label: string; description: string; source: 'core' | 'custom' }
 
 function extractDraftBlock(text: string): string | null {
   const match = text.match(/```draft\s*([\s\S]*?)\s*```/i)
@@ -74,6 +75,19 @@ function isMetaAdLibraryUrlCandidate(text: string) {
   return /facebook\.com\/ads\/library\//i.test(text)
 }
 
+function slugify(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)+/g, '')
+}
+
+function makeSkillKey(name: string) {
+  const base = slugify(name)
+  if (!base) return `custom_${Date.now()}`
+  return `custom_${base}`
+}
+
 export default function GeneratePage() {
   const { selectedProduct, openContextDrawer, setContextDrawerExtra } = useAppContext()
 
@@ -87,12 +101,22 @@ export default function GeneratePage() {
   const [avatars, setAvatars] = useState<AvatarRow[]>([])
   const [avatarQuery, setAvatarQuery] = useState('')
   const [pitches, setPitches] = useState<PitchRow[]>([])
+  const [customSkills, setCustomSkills] = useState<SkillOption[]>([])
+  const [skillsLoaded, setSkillsLoaded] = useState(false)
+  const [skillBuilderOpen, setSkillBuilderOpen] = useState(false)
+  const [skillName, setSkillName] = useState('')
+  const [skillDescription, setSkillDescription] = useState('')
+  const [skillGuidance, setSkillGuidance] = useState('')
+  const [skillSaving, setSkillSaving] = useState(false)
+  const [skillError, setSkillError] = useState<string | null>(null)
+  const [skillSuccess, setSkillSuccess] = useState<string | null>(null)
   const [swipes, setSwipes] = useState<SwipeRow[]>([])
   const [activeSwipe, setActiveSwipe] = useState<SwipeRow | null>(null)
 
   // Editor
   const [activeTab, setActiveTab] = useState(0)
   const [canvasTabs, setCanvasTabs] = useState<string[]>([''])
+  const canvasRef = useRef<string[]>([''])
 
   const scrollRef = useRef<HTMLDivElement | null>(null)
 
@@ -101,6 +125,22 @@ export default function GeneratePage() {
   const avatarIds = Array.isArray(threadContext.avatar_ids) ? threadContext.avatar_ids : []
   const positioningId = threadContext.positioning_id || null
   const activeSwipeId = threadContext.active_swipe_id || null
+
+  const skillOptions = useMemo<SkillOption[]>(() => {
+    const core = CONTENT_TYPES.map((ct) => ({
+      id: ct.id,
+      label: ct.label,
+      description: ct.description,
+      source: 'core' as const,
+    }))
+    const custom = customSkills.filter(
+      (cs) => !core.some((c) => c.id === cs.id)
+    )
+    return [...core, ...custom]
+  }, [customSkills])
+
+  const activeSkill = skillOptions.find((s) => s.id === skill)
+  const activePositioning = pitches.find((p) => p.id === positioningId) || null
 
   // Keep canvas tab count in sync with versions
   useEffect(() => {
@@ -115,6 +155,10 @@ export default function GeneratePage() {
     })
     setActiveTab((t) => Math.min(t, versions - 1))
   }, [versions])
+
+  useEffect(() => {
+    canvasRef.current = canvasTabs
+  }, [canvasTabs])
 
   // Create or reuse thread when product changes
   useEffect(() => {
@@ -223,6 +267,38 @@ export default function GeneratePage() {
     }
   }, [selectedProduct])
 
+  const refreshSkills = useCallback(async () => {
+    try {
+      const res = await fetch('/api/prompt-blocks?type=feature_template&scope=global&active_only=true')
+      if (!res.ok) throw new Error('Failed to load skills')
+      const data = await res.json()
+      const mapped = (Array.isArray(data) ? data : [])
+        .map((row: any) => {
+          const meta = row.metadata || {}
+          const key = typeof meta.key === 'string' ? meta.key : null
+          if (!key) return null
+          return {
+            id: key,
+            label: meta.label || row.name || key,
+            description: meta.description || 'Custom skill',
+            source: 'custom' as const,
+          }
+        })
+        .filter(Boolean) as SkillOption[]
+
+      const unique = new Map(mapped.map((m) => [m.id, m]))
+      setCustomSkills(Array.from(unique.values()))
+    } catch (err) {
+      setCustomSkills([])
+    } finally {
+      setSkillsLoaded(true)
+    }
+  }, [])
+
+  useEffect(() => {
+    refreshSkills()
+  }, [refreshSkills])
+
   // Poll active swipe status until ready/failed
   useEffect(() => {
     let cancelled = false
@@ -253,30 +329,120 @@ export default function GeneratePage() {
   // Register Generate-specific controls inside the global Context drawer
   useEffect(() => {
     const node = (
-      <div className="space-y-6">
+      <div className="space-y-4">
         <div>
-          <p className="text-[10px] uppercase tracking-[0.28em] text-[var(--editor-ink-muted)] mb-2">
-            Skill
-          </p>
-          <div className="flex flex-wrap gap-2">
-            {CONTENT_TYPES.map((ct) => {
-              const active = ct.id === skill
-              return (
-                <button
-                  key={ct.id}
-                  onClick={() => setThreadContext((prev) => ({ ...prev, skill: ct.id }))}
-                  className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all border ${
-                    active
-                      ? 'bg-[var(--editor-accent)] text-white border-[var(--editor-accent)]'
-                      : 'bg-transparent text-[var(--editor-ink-muted)] border-[var(--editor-border)] hover:text-[var(--editor-ink)] hover:border-[var(--editor-ink)]'
-                  }`}
-                  title={ct.description}
-                >
-                  {ct.label}
-                </button>
-              )
-            })}
+          <div className="flex items-center justify-between gap-3 mb-2">
+            <p className="text-[10px] uppercase tracking-[0.28em] text-[var(--editor-ink-muted)]">
+              Skill
+            </p>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => {
+                  setSkillBuilderOpen((v) => !v)
+                  setSkillError(null)
+                  setSkillSuccess(null)
+                }}
+                className="editor-button-ghost text-[11px] px-3 py-1.5"
+              >
+                {skillBuilderOpen ? 'Close builder' : 'New skill'}
+              </button>
+              <a
+                href="/studio/prompts"
+                className="text-[11px] text-[var(--editor-ink-muted)] underline underline-offset-4"
+              >
+                Prompt blocks
+              </a>
+            </div>
           </div>
+
+          {skillsLoaded ? (
+            <div className="flex flex-wrap gap-2">
+              {skillOptions.map((ct) => {
+                const active = ct.id === skill
+                return (
+                  <button
+                    key={ct.id}
+                    onClick={() => setThreadContext((prev) => ({ ...prev, skill: ct.id }))}
+                    className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all border ${
+                      active
+                        ? 'bg-[var(--editor-accent)] text-white border-[var(--editor-accent)]'
+                        : 'bg-transparent text-[var(--editor-ink-muted)] border-[var(--editor-border)] hover:text-[var(--editor-ink)] hover:border-[var(--editor-ink)]'
+                    }`}
+                    title={ct.description}
+                  >
+                    {ct.label}
+                  </button>
+                )
+              })}
+            </div>
+          ) : (
+            <p className="text-xs text-[var(--editor-ink-muted)]">Loading skills...</p>
+          )}
+
+          {skillBuilderOpen && (
+            <div className="mt-3 p-4 rounded-2xl border border-[var(--editor-border)] bg-[var(--editor-panel-muted)] space-y-3">
+              <div>
+                <label className="block text-[11px] uppercase tracking-[0.2em] text-[var(--editor-ink-muted)] mb-1">
+                  Skill Name
+                </label>
+                <input
+                  value={skillName}
+                  onChange={(e) => setSkillName(e.target.value)}
+                  placeholder="e.g., Short Form UGC Hooks"
+                  className="editor-input w-full text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] uppercase tracking-[0.2em] text-[var(--editor-ink-muted)] mb-1">
+                  Description
+                </label>
+                <input
+                  value={skillDescription}
+                  onChange={(e) => setSkillDescription(e.target.value)}
+                  placeholder="What this skill is best at."
+                  className="editor-input w-full text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] uppercase tracking-[0.2em] text-[var(--editor-ink-muted)] mb-1">
+                  Skill Guidance
+                </label>
+                <textarea
+                  value={skillGuidance}
+                  onChange={(e) => setSkillGuidance(e.target.value)}
+                  placeholder="Give the agent a clear structure, tone rules, and output format."
+                  rows={5}
+                  className="editor-input w-full text-sm resize-none"
+                />
+              </div>
+
+              {skillError && (
+                <p className="text-xs text-red-600">{skillError}</p>
+              )}
+              {skillSuccess && (
+                <p className="text-xs text-[var(--editor-accent-strong)]">{skillSuccess}</p>
+              )}
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={saveCustomSkill}
+                  disabled={skillSaving}
+                  className="editor-button text-xs px-4 py-2"
+                >
+                  {skillSaving ? 'Saving...' : 'Save Skill'}
+                </button>
+                <button
+                  onClick={() => {
+                    setSkillBuilderOpen(false)
+                    resetSkillBuilder()
+                  }}
+                  className="editor-button-ghost text-xs px-4 py-2"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         <div>
@@ -301,9 +467,6 @@ export default function GeneratePage() {
               </button>
             ))}
           </div>
-          <p className="text-xs text-[var(--editor-ink-muted)] mt-2">
-            Drafts are a secondary feature. Default is 1.
-          </p>
         </div>
 
         <div>
@@ -352,9 +515,17 @@ export default function GeneratePage() {
         </div>
 
         <div>
-          <p className="text-[10px] uppercase tracking-[0.28em] text-[var(--editor-ink-muted)] mb-2">
-            Positioning
-          </p>
+          <div className="flex items-center justify-between gap-3 mb-2">
+            <p className="text-[10px] uppercase tracking-[0.28em] text-[var(--editor-ink-muted)]">
+              Positioning
+            </p>
+            <a
+              href="/studio/pitches"
+              className="text-[11px] text-[var(--editor-ink-muted)] underline underline-offset-4"
+            >
+              Manage
+            </a>
+          </div>
           <select
             value={positioningId || ''}
             onChange={(e) =>
@@ -372,9 +543,15 @@ export default function GeneratePage() {
               </option>
             ))}
           </select>
-          <p className="text-xs text-[var(--editor-ink-muted)] mt-2">
-            (Pitches renamed in UI as "Positioning".)
-          </p>
+          {pitches.length === 0 ? (
+            <p className="text-xs text-[var(--editor-ink-muted)] mt-2">
+              No positioning yet. Add one to guide the agent&apos;s angle.
+            </p>
+          ) : (
+            <p className="text-xs text-[var(--editor-ink-muted)] mt-2">
+              Choose an angle/positioning you want the agent to follow.
+            </p>
+          )}
         </div>
 
         <div>
@@ -438,6 +615,15 @@ export default function GeneratePage() {
   }, [
     setContextDrawerExtra,
     skill,
+    skillOptions,
+    skillsLoaded,
+    skillBuilderOpen,
+    skillName,
+    skillDescription,
+    skillGuidance,
+    skillSaving,
+    skillError,
+    skillSuccess,
     versions,
     avatarIds,
     avatarQuery,
@@ -447,13 +633,66 @@ export default function GeneratePage() {
     pitches,
     swipes,
     activeSwipe,
+    saveCustomSkill,
+    resetSkillBuilder,
   ])
 
-  const filteredAvatarsLabel = useMemo(() => {
-    if (avatarIds.length === 0) return 'No avatars selected'
-    if (avatarIds.length === 1) return '1 avatar selected'
-    return `${avatarIds.length} avatars selected`
-  }, [avatarIds.length])
+  function resetSkillBuilder() {
+    setSkillName('')
+    setSkillDescription('')
+    setSkillGuidance('')
+    setSkillError(null)
+    setSkillSuccess(null)
+  }
+
+  async function saveCustomSkill() {
+    const name = skillName.trim()
+    const guidance = skillGuidance.trim()
+    if (!name || !guidance) {
+      setSkillError('Add a name and guidance for the skill.')
+      return
+    }
+
+    const key = makeSkillKey(name)
+    setSkillSaving(true)
+    setSkillError(null)
+    setSkillSuccess(null)
+
+    try {
+      const res = await fetch('/api/prompt-blocks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name,
+          type: 'feature_template',
+          scope: 'global',
+          content: guidance,
+          metadata: {
+            key,
+            label: name,
+            description: skillDescription.trim() || 'Custom skill',
+            origin: 'custom',
+          },
+        }),
+      })
+
+      const data = await res.json()
+      if (!res.ok) {
+        throw new Error(data?.error || 'Failed to save skill')
+      }
+
+      await refreshSkills()
+      setThreadContext((prev) => ({ ...prev, skill: key }))
+      setSkillSuccess('Skill saved.')
+      setSkillBuilderOpen(false)
+      resetSkillBuilder()
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to save skill'
+      setSkillError(msg)
+    } finally {
+      setSkillSaving(false)
+    }
+  }
 
   async function sendMessage() {
     if (!threadId || sending) return
@@ -482,8 +721,16 @@ export default function GeneratePage() {
       const data = await res.json()
       if (!res.ok) throw new Error(data?.error || 'Agent chat failed')
 
+      const assistantMessage = data.assistant_message
+      const draft = extractDraftBlock(assistantMessage)
+      const canvasEmpty = canvasRef.current.every((t) => !t.trim())
+
       setThreadContext((prev) => ({ ...prev, ...(data.thread_context || {}) }))
-      setMessages((prev) => [...prev, { role: 'assistant', content: data.assistant_message }])
+      setMessages((prev) => [...prev, { role: 'assistant', content: assistantMessage }])
+
+      if (draft && canvasEmpty) {
+        insertDraftIntoCanvas(draft)
+      }
       queueMicrotask(() => scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }))
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to send'
@@ -517,19 +764,45 @@ export default function GeneratePage() {
 
   return (
     <div className="h-full flex flex-col">
-      <div className="flex-1 grid grid-cols-1 lg:grid-cols-[420px_1fr] gap-4 p-5 overflow-hidden">
+      <div className="flex-1 grid grid-cols-1 lg:grid-cols-[360px_1fr] gap-5 p-5 overflow-hidden">
         {/* Chat */}
         <section className="editor-panel flex flex-col overflow-hidden">
-          <div className="px-5 py-4 border-b border-[var(--editor-border)] bg-[var(--editor-panel)]/70">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <p className="text-[10px] uppercase tracking-[0.28em] text-[var(--editor-ink-muted)]">
+          <div className="px-4 py-3 border-b border-[var(--editor-border)] bg-[var(--editor-panel)]/70">
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] uppercase tracking-[0.28em] text-[var(--editor-ink-muted)]">
                   Agent
-                </p>
-                <p className="font-serif text-lg leading-tight">Write with context, not settings.</p>
-                <p className="text-xs text-[var(--editor-ink-muted)] mt-1">
-                  {filteredAvatarsLabel} - {CONTENT_TYPES.find((c) => c.id === skill)?.label || skill}
-                </p>
+                </span>
+                <span className="chat-chip chat-chip--accent">
+                  {activeSkill?.label || skill}
+                </span>
+                {activePositioning && (
+                  <span className="chat-chip">
+                    Positioning: {activePositioning.name}
+                  </span>
+                )}
+                {avatarIds.length > 0 && (
+                  <span className="chat-chip">
+                    Avatars: {avatarIds.length}
+                  </span>
+                )}
+                {activeSwipe && (
+                  <span
+                    className={`chat-chip ${
+                      activeSwipe.status === 'ready'
+                        ? 'chat-chip--accent'
+                        : activeSwipe.status === 'failed'
+                          ? 'chat-chip--warning'
+                          : 'chat-chip--muted'
+                    }`}
+                  >
+                    Swipe {activeSwipe.status === 'ready'
+                      ? 'Ready'
+                      : activeSwipe.status === 'failed'
+                        ? 'Failed'
+                        : 'Transcribing'}
+                  </span>
+                )}
               </div>
               <button onClick={openContextDrawer} className="editor-button-ghost text-xs">
                 Context
@@ -537,30 +810,16 @@ export default function GeneratePage() {
             </div>
 
             {activeSwipe && (
-              <div className="mt-4 flex items-center gap-2">
-                <span className="editor-tag editor-tag--note">Swipe</span>
-                <span className="text-xs text-[var(--editor-ink-muted)] truncate max-w-[250px]">
-                  {activeSwipe.title || activeSwipe.source_url || activeSwipe.id}
-                </span>
-                <span
-                  className={`editor-tag ${
-                    activeSwipe.status === 'ready' ? 'editor-tag--note' : 'editor-tag--warning'
-                  }`}
-                >
-                  {activeSwipe.status === 'ready'
-                    ? 'Ready'
-                    : activeSwipe.status === 'failed'
-                      ? 'Failed'
-                      : 'Transcribing...'}
-                </span>
-              </div>
+              <p className="text-[11px] text-[var(--editor-ink-muted)] mt-2 truncate">
+                {activeSwipe.title || activeSwipe.source_url || activeSwipe.id}
+              </p>
             )}
           </div>
 
-          <div ref={scrollRef} className="flex-1 overflow-auto p-5 space-y-4">
+          <div ref={scrollRef} className="flex-1 overflow-auto p-4 space-y-3">
             {messages.length === 0 ? (
-              <div className="text-sm text-[var(--editor-ink-muted)] leading-6">
-                <p className="font-semibold text-[var(--editor-ink)]">Start simple:</p>
+              <div className="text-[13px] text-[var(--editor-ink-muted)] leading-5">
+                <p className="font-medium text-[var(--editor-ink)]">Try this:</p>
                 <p className="mt-2">1. Paste a Meta Ad Library URL</p>
                 <p>2. Say what you want to write (script, hooks, angles)</p>
                 <p>3. Insert the draft into your canvas</p>
@@ -573,15 +832,15 @@ export default function GeneratePage() {
                 return (
                   <div key={m.id || idx} className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
                     <div
-                      className={`max-w-[92%] rounded-2xl border px-4 py-3 ${
+                      className={`max-w-[88%] rounded-2xl border px-4 py-3 ${
                         isUser
-                          ? 'bg-[var(--editor-ink)] text-[var(--editor-rail-ink)] border-[var(--editor-ink)]'
+                          ? 'bg-[rgba(18,33,30,0.92)] text-[var(--editor-rail-ink)] border-[rgba(18,33,30,0.92)]'
                           : isTool
-                            ? 'bg-[rgba(189,255,0,0.12)] text-[var(--editor-ink)] border-[rgba(10,31,28,0.16)]'
+                            ? 'bg-[var(--editor-panel-muted)] text-[var(--editor-ink)] border-[var(--editor-border)]'
                             : 'bg-[var(--editor-panel)] text-[var(--editor-ink)] border-[var(--editor-border)]'
                       }`}
                     >
-                      <pre className="whitespace-pre-wrap font-sans text-sm leading-6">
+                      <pre className="whitespace-pre-wrap font-sans text-[13px] leading-5 font-medium">
                         {m.content}
                       </pre>
 
@@ -607,7 +866,7 @@ export default function GeneratePage() {
             )}
           </div>
 
-          <div className="p-5 border-t border-[var(--editor-border)] bg-[var(--editor-panel)]/70">
+          <div className="p-4 border-t border-[var(--editor-border)] bg-[var(--editor-panel)]/70">
             <form
               onSubmit={(e) => {
                 e.preventDefault()
@@ -621,9 +880,9 @@ export default function GeneratePage() {
                   onChange={(e) => setComposer(e.target.value)}
                   placeholder="Paste a Meta Ad Library URL, or tell me what to write..."
                   rows={2}
-                  className="editor-input w-full text-sm resize-none"
+                  className="editor-input w-full text-[13px] leading-5 resize-none"
                 />
-                <p className="text-[11px] text-[var(--editor-ink-muted)] mt-2">
+                <p className="text-[10px] text-[var(--editor-ink-muted)] mt-2">
                   Tip: start with &quot;Write 1 UGC script from this swipe, then 5 hook variations.&quot;
                 </p>
               </div>
@@ -640,12 +899,12 @@ export default function GeneratePage() {
 
         {/* Draft Canvas */}
         <section className="editor-panel flex flex-col overflow-hidden">
-          <div className="px-6 py-4 border-b border-[var(--editor-border)] flex items-center justify-between gap-4">
+          <div className="px-5 py-3 border-b border-[var(--editor-border)] flex items-center justify-between gap-4">
             <div>
               <p className="text-[10px] uppercase tracking-[0.28em] text-[var(--editor-ink-muted)]">
                 Draft Canvas
               </p>
-              <p className="font-serif text-lg">Focus mode</p>
+              <p className="font-serif text-base">Focus mode</p>
             </div>
 
             {versions > 1 && (

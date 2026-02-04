@@ -1,26 +1,183 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --editor-bg: #f5f1ea;
+  --editor-panel: #fffaf3;
+  --editor-panel-muted: #f0e9dd;
+  --editor-ink: #1c1914;
+  --editor-ink-muted: #6b6156;
+  --editor-border: #e6d9c7;
+  --editor-rail: #1d1b18;
+  --editor-rail-ink: #f7f1e8;
+  --editor-accent: #2f67ff;
+  --editor-accent-strong: #1f46bf;
+  --editor-accent-soft: #dbe6ff;
+  --editor-warning: #f4a340;
+  --editor-success: #1f9d5c;
+  --editor-shadow: rgba(21, 16, 11, 0.08);
+  --editor-card-shadow: rgba(21, 16, 11, 0.12);
+
+  --background: var(--editor-bg);
+  --foreground: var(--editor-ink);
+  --muted: var(--editor-panel-muted);
+  --muted-foreground: var(--editor-ink-muted);
+  --border: var(--editor-border);
+  --accent: var(--editor-accent);
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --color-background: var(--editor-bg);
+  --color-foreground: var(--editor-ink);
+  --font-sans: var(--font-editor-sans);
+  --font-mono: var(--font-editor-mono);
+  --font-serif: var(--font-editor-serif);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background-color: var(--editor-bg);
+  color: var(--editor-ink);
+  font-family: var(--font-editor-sans), sans-serif;
+  background-image:
+    radial-gradient(circle at 12% 18%, rgba(47, 103, 255, 0.08), transparent 45%),
+    radial-gradient(circle at 82% -10%, rgba(244, 163, 64, 0.16), transparent 40%),
+    linear-gradient(120deg, rgba(255, 255, 255, 0.65), rgba(255, 255, 255, 0));
+  background-attachment: fixed;
+}
+
+/* Clean scrollbars */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(27, 21, 14, 0.25);
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(27, 21, 14, 0.4);
+}
+
+/* Selection highlight for inline editing */
+::selection {
+  background: rgba(47, 103, 255, 0.2);
+}
+
+.editor-panel {
+  background: var(--editor-panel);
+  border: 1px solid var(--editor-border);
+  border-radius: 20px;
+  box-shadow: 0 30px 60px -40px var(--editor-shadow);
+}
+
+.editor-panel-soft {
+  background: var(--editor-panel-muted);
+  border: 1px dashed var(--editor-border);
+  border-radius: 16px;
+}
+
+.editor-input {
+  background: var(--editor-panel);
+  border: 1px solid var(--editor-border);
+  border-radius: 14px;
+  padding: 0.65rem 0.9rem;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  color: var(--editor-ink);
+}
+
+.editor-input::placeholder {
+  color: var(--editor-ink-muted);
+}
+
+.editor-input:focus {
+  outline: none;
+  border-color: var(--editor-accent);
+  box-shadow: 0 0 0 3px rgba(47, 103, 255, 0.16);
+}
+
+.editor-chip {
+  background: var(--editor-panel-muted);
+  color: var(--editor-ink-muted);
+  border: 1px solid var(--editor-border);
+  border-radius: 999px;
+  padding: 0.35rem 0.75rem;
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.editor-chip.is-active {
+  background: var(--editor-accent);
+  border-color: var(--editor-accent);
+  color: #fff;
+  box-shadow: 0 12px 24px -16px rgba(47, 103, 255, 0.7);
+}
+
+.editor-button {
+  background: var(--editor-accent);
+  color: #fff;
+  border-radius: 999px;
+  padding: 0.7rem 1.6rem;
+  font-weight: 600;
+  box-shadow: 0 18px 30px -22px rgba(47, 103, 255, 0.9);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.editor-button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 18px 34px -20px rgba(47, 103, 255, 0.8);
+}
+
+.editor-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.editor-button-ghost {
+  background: transparent;
+  border: 1px solid var(--editor-border);
+  color: var(--editor-ink);
+  border-radius: 999px;
+  padding: 0.6rem 1.2rem;
+  font-weight: 600;
+  transition: border-color 0.2s ease, color 0.2s ease;
+}
+
+.editor-button-ghost:hover {
+  border-color: var(--editor-ink);
+  color: var(--editor-ink);
+}
+
+.editor-gutter {
+  background: linear-gradient(180deg, rgba(236, 228, 216, 0.85), rgba(245, 241, 234, 0.6));
+  border-right: 1px dashed var(--editor-border);
+  color: var(--editor-ink-muted);
+  font-family: var(--font-editor-mono), ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.65rem;
+  letter-spacing: 0.1em;
+}
+
+.editor-tag {
+  border-radius: 999px;
+  padding: 0.2rem 0.6rem;
+  font-size: 0.65rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.editor-tag--note {
+  background: rgba(47, 103, 255, 0.12);
+  color: var(--editor-accent-strong);
+}
+
+.editor-tag--warning {
+  background: rgba(244, 163, 64, 0.18);
+  color: #a76317;
 }

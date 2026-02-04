@@ -82,13 +82,16 @@ export async function POST(request: NextRequest) {
     }
 
     const email = validated.data.email.toLowerCase()
+    // Legacy from the original Supabase-based schema; still required by the DB.
+    const authUserId = crypto.randomUUID()
     const password = validated.data.password || crypto.randomBytes(9).toString('base64url')
     const passwordHash = await hashPassword(password)
 
     try {
       const rows = await sql`
-        INSERT INTO app_users (email, name, role, is_active, password_hash, last_password_reset_at)
+        INSERT INTO app_users (auth_user_id, email, name, role, is_active, password_hash, last_password_reset_at)
         VALUES (
+          ${authUserId},
           ${email},
           ${validated.data.name ?? null},
           ${validated.data.role},

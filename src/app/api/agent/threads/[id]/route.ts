@@ -35,9 +35,11 @@ export async function PATCH(request: NextRequest, context: { params: Promise<{ i
     const body = await request.json()
     const nextContext = body.context && typeof body.context === 'object' ? body.context : null
     const nextTitle = typeof body.title === 'string' ? body.title : undefined
+    const nextDraftTitle = typeof body.draft_title === 'string' ? body.draft_title : undefined
+    const nextDraftContent = typeof body.draft_content === 'string' ? body.draft_content : undefined
 
     const rows = await sql`
-      SELECT id, context, title
+      SELECT id, context, title, draft_title, draft_content
       FROM agent_threads
       WHERE id = ${id}
         AND user_id = ${user.id}
@@ -48,10 +50,16 @@ export async function PATCH(request: NextRequest, context: { params: Promise<{ i
 
     const mergedContext = nextContext ? { ...(thread.context || {}), ...nextContext } : thread.context
     const title = nextTitle !== undefined ? nextTitle : thread.title
+    const draftTitle = nextDraftTitle !== undefined ? nextDraftTitle : thread.draft_title
+    const draftContent = nextDraftContent !== undefined ? nextDraftContent : thread.draft_content
 
     const updatedRows = await sql`
       UPDATE agent_threads
-      SET context = ${mergedContext}, title = ${title}, updated_at = NOW()
+      SET context = ${mergedContext},
+          title = ${title},
+          draft_title = ${draftTitle},
+          draft_content = ${draftContent},
+          updated_at = NOW()
       WHERE id = ${id}
       RETURNING *
     `

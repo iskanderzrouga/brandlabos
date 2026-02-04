@@ -10,6 +10,34 @@ const DEFAULT_THREAD_CONTEXT = {
   active_swipe_id: null,
 }
 
+export async function GET(request: NextRequest) {
+  const user = await requireAuth()
+  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  const { searchParams } = new URL(request.url)
+  const productId = String(searchParams.get('product_id') || '').trim()
+  const limit = Math.min(200, Math.max(1, Number(searchParams.get('limit') || 50)))
+
+  if (!productId) {
+    return NextResponse.json({ error: 'product_id is required' }, { status: 400 })
+  }
+
+  try {
+    const rows = await sql`
+      SELECT id, title, draft_title, draft_content, context, updated_at, created_at
+      FROM agent_threads
+      WHERE product_id = ${productId}
+        AND user_id = ${user.id}
+      ORDER BY updated_at DESC
+      LIMIT ${limit}
+    `
+    return NextResponse.json(rows)
+  } catch (error) {
+    console.error('List threads error:', error)
+    return NextResponse.json({ error: 'Failed to list threads' }, { status: 500 })
+  }
+}
+
 export async function POST(request: NextRequest) {
   const user = await requireAuth()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -17,27 +45,31 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
     const productId = String(body.product_id || '').trim()
+    const reuseLatest = Boolean(body.reuse_latest)
+    const providedContext = body.context && typeof body.context === 'object' ? body.context : null
     if (!productId) {
       return NextResponse.json({ error: 'product_id is required' }, { status: 400 })
     }
 
-    // Reuse the most recent thread for this user+product.
-    const existingRows = await sql`
-      SELECT *
-      FROM agent_threads
-      WHERE product_id = ${productId}
-        AND user_id = ${user.id}
-      ORDER BY updated_at DESC
-      LIMIT 1
-    `
-    const existing = existingRows[0]
-    if (existing) {
-      return NextResponse.json(existing)
+    if (reuseLatest) {
+      const existingRows = await sql`
+        SELECT *
+        FROM agent_threads
+        WHERE product_id = ${productId}
+          AND user_id = ${user.id}
+        ORDER BY updated_at DESC
+        LIMIT 1
+      `
+      const existing = existingRows[0]
+      if (existing) {
+        return NextResponse.json(existing)
+      }
     }
 
+    const context = providedContext || DEFAULT_THREAD_CONTEXT
     const rows = await sql`
       INSERT INTO agent_threads (product_id, user_id, title, context)
-      VALUES (${productId}, ${user.id}, ${null}, ${DEFAULT_THREAD_CONTEXT})
+      VALUES (${productId}, ${user.id}, ${null}, ${context})
       RETURNING *
     `
     const thread = rows[0]
@@ -47,4 +79,3 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Failed to create thread' }, { status: 500 })
   }
 }
-

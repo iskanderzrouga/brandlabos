@@ -225,6 +225,20 @@ async function applyMigrations(sql) {
           return Boolean(rows[0]?.v)
         },
       },
+      {
+        filename: '007_agent_threads_drafts.sql',
+        check: async () => {
+          const rows = await sql.query(`
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'agent_threads'
+              AND column_name = 'draft_content'
+            LIMIT 1
+          `)
+          return rows.length > 0
+        },
+      },
     ]
 
     for (const b of baselines) {

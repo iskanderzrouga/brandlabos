@@ -4,6 +4,7 @@
   --editor-bg: #fdfdfb;
   --editor-panel: #ffffff;
   --editor-panel-muted: #f6f6f1;
+  --editor-canvas: #fbf7ef;
   --editor-ink: #12211e;
   --editor-ink-muted: #4c5f5b;
   --editor-border: rgba(18, 33, 30, 0.12);
@@ -41,6 +42,12 @@ body {
     radial-gradient(circle at 14% 18%, rgba(42, 157, 143, 0.04), transparent 45%),
     radial-gradient(circle at 88% -10%, rgba(242, 201, 123, 0.05), transparent 40%);
   background-attachment: fixed;
+}
+
+html,
+body,
+#__next {
+  height: 100%;
 }
 
 /* Clean scrollbars */

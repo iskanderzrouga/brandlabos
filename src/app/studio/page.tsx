@@ -79,6 +79,43 @@ function splitDraftVersions(draft: string, versions: number): string[] {
   return out
 }
 
+function serializeDraftTabs(tabs: string[]) {
+  return JSON.stringify({ tabs })
+}
+
+function parseDraftTabs(raw: string | null, versions: number): string[] {
+  if (!raw) return Array.from({ length: versions }, () => '')
+  try {
+    const parsed = JSON.parse(raw)
+    if (Array.isArray(parsed)) {
+      const next = [...parsed]
+      while (next.length < versions) next.push('')
+      next.length = versions
+      return next
+    }
+    if (parsed && Array.isArray(parsed.tabs)) {
+      const next = [...parsed.tabs]
+      while (next.length < versions) next.push('')
+      next.length = versions
+      return next
+    }
+  } catch {
+    // fall through to plain text
+  }
+  const next = Array.from({ length: versions }, () => '')
+  next[0] = raw
+  return next
+}
+
+function deriveDraftTitle(tabs: string[]) {
+  const joined = tabs.join('\n')
+  const firstLine = joined
+    .split('\n')
+    .map((l) => l.replace(/^#+\s*/, '').trim())
+    .find((l) => l.length > 0)
+  return firstLine ? firstLine.slice(0, 80) : 'Untitled draft'
+}
+
 function isMetaAdLibraryUrlCandidate(text: string) {
   return /facebook\.com\/ads\/library\//i.test(text)
 }
@@ -101,6 +138,11 @@ export default function GeneratePage() {
 
   const [threadId, setThreadId] = useState<string | null>(null)
   const [threadContext, setThreadContext] = useState<ThreadContext>({})
+  const [threads, setThreads] = useState<Array<any>>([])
+  const [threadsLoading, setThreadsLoading] = useState(false)
+  const [threadHydrating, setThreadHydrating] = useState(false)
+  const [draftSaving, setDraftSaving] = useState(false)
+  const [draftSavedAt, setDraftSavedAt] = useState<string | null>(null)
 
   const [messages, setMessages] = useState<AgentMessage[]>([])
   const [composer, setComposer] = useState('')
@@ -151,8 +193,13 @@ export default function GeneratePage() {
     return [...core, ...custom]
   }, [customSkills])
 
-  const activeSkill = skillOptions.find((s) => s.id === skill)
-  const activePositioning = pitches.find((p) => p.id === positioningId) || null
+  const recentThreads = useMemo(() => {
+    return [...threads].sort((a, b) => {
+      const aTime = a.updated_at ? new Date(a.updated_at).getTime() : 0
+      const bTime = b.updated_at ? new Date(b.updated_at).getTime() : 0
+      return bTime - aTime
+    })
+  }, [threads])
 
   // Keep canvas tab count in sync with versions
   useEffect(() => {
@@ -172,49 +219,100 @@ export default function GeneratePage() {
     canvasRef.current = canvasTabs
   }, [canvasTabs])
 
-  // Create or reuse thread when product changes
-  useEffect(() => {
-    let active = true
-    const run = async () => {
-      setThreadId(null)
-      setThreadContext({})
-      setMessages([])
-      if (!selectedProduct) return
+  const storageKey = selectedProduct ? `bl_active_thread_${selectedProduct}` : null
 
-      const res = await fetch('/api/agent/threads', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ product_id: selectedProduct }),
-      })
-      if (!res.ok) return
-      const thread = await res.json()
-      if (!active) return
-      setThreadId(thread.id)
-      setThreadContext(thread.context || {})
-    }
-    run()
-    return () => {
-      active = false
-    }
-  }, [selectedProduct])
+  const loadThreadById = useCallback(async (id: string) => {
+    if (!id) return
+    setThreadHydrating(true)
+    setMessages([])
+    setThreadId(null)
 
-  // Load messages for the thread
-  useEffect(() => {
-    let active = true
-    const run = async () => {
-      if (!threadId) return
-      const res = await fetch(`/api/agent/messages?thread_id=${threadId}`)
-      if (!res.ok) return
-      const data = await res.json()
-      if (!active) return
+    const threadRes = await fetch(`/api/agent/threads/${id}`)
+    if (!threadRes.ok) {
+      setThreadHydrating(false)
+      return
+    }
+    const thread = await threadRes.json()
+    setThreadId(thread.id)
+    setThreadContext(thread.context || {})
+
+    const threadVersions = Math.min(6, Math.max(1, Number(thread.context?.versions || 1)))
+    const tabs = parseDraftTabs(thread.draft_content || null, threadVersions)
+    setCanvasTabs(tabs)
+    setActiveTab(0)
+    setDraftSavedAt(thread.updated_at || null)
+
+    const msgRes = await fetch(`/api/agent/messages?thread_id=${thread.id}`)
+    if (msgRes.ok) {
+      const data = await msgRes.json()
       setMessages(Array.isArray(data) ? data : [])
       queueMicrotask(() => scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight }))
     }
+
+    if (storageKey) {
+      localStorage.setItem(storageKey, thread.id)
+    }
+    const params = new URLSearchParams(window.location.search)
+    params.set('thread', thread.id)
+    window.history.replaceState(null, '', `/studio?${params.toString()}`)
+
+    setThreadHydrating(false)
+  }, [storageKey])
+
+  const createThread = useCallback(async (contextSeed: ThreadContext | null) => {
+    if (!selectedProduct) return null
+    const res = await fetch('/api/agent/threads', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ product_id: selectedProduct, context: contextSeed || undefined }),
+    })
+    if (!res.ok) return null
+    const thread = await res.json()
+    return thread
+  }, [selectedProduct])
+
+  // Load threads and hydrate active thread
+  useEffect(() => {
+    let active = true
+    const run = async () => {
+      setThreads([])
+      setThreadId(null)
+      setThreadContext({})
+      setMessages([])
+      setCanvasTabs([''])
+      setActiveTab(0)
+      if (!selectedProduct) return
+
+      setThreadsLoading(true)
+      const res = await fetch(`/api/agent/threads?product_id=${selectedProduct}`)
+      const list = res.ok ? await res.json() : []
+      if (!active) return
+      const threadsList = Array.isArray(list) ? list : []
+      setThreads(threadsList)
+      setThreadsLoading(false)
+
+      const params = new URLSearchParams(window.location.search)
+      const threadFromUrl = params.get('thread')
+      const storedThread = storageKey ? localStorage.getItem(storageKey) : null
+      const candidateId = threadFromUrl || storedThread
+      const candidateExists = candidateId && threadsList.some((t: any) => t.id === candidateId)
+
+      if (candidateExists) {
+        await loadThreadById(candidateId as string)
+        return
+      }
+
+      const seedContext = threadsList[0]?.context || null
+      const newThread = await createThread(seedContext)
+      if (!active || !newThread) return
+      setThreads((prev) => [newThread, ...prev])
+      await loadThreadById(newThread.id)
+    }
     run()
     return () => {
       active = false
     }
-  }, [threadId])
+  }, [selectedProduct, storageKey, loadThreadById, createThread])
 
   // Apply swipe param from Swipes page
   useEffect(() => {
@@ -245,6 +343,35 @@ export default function GeneratePage() {
     }, 450)
     return () => clearTimeout(handle)
   }, [threadId, skill, versions, avatarIds, positioningId, activeSwipeId])
+
+  // Auto-save draft content
+  useEffect(() => {
+    if (!threadId || threadHydrating) return
+    const handle = setTimeout(async () => {
+      const payload = serializeDraftTabs(canvasTabs)
+      const draftTitle = deriveDraftTitle(canvasTabs)
+      setDraftSaving(true)
+      await fetch(`/api/agent/threads/${threadId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          draft_content: payload,
+          draft_title: draftTitle,
+        }),
+      }).catch(() => {})
+      const updatedAt = new Date().toISOString()
+      setThreads((prev) =>
+        prev.map((t) =>
+          t.id === threadId
+            ? { ...t, draft_title: draftTitle, draft_content: payload, updated_at: updatedAt }
+            : t
+        )
+      )
+      setDraftSaving(false)
+      setDraftSavedAt(updatedAt)
+    }, 900)
+    return () => clearTimeout(handle)
+  }, [threadId, canvasTabs, threadHydrating])
 
   // Load avatars/pitches/swipes for context drawer
   useEffect(() => {
@@ -416,10 +543,10 @@ export default function GeneratePage() {
                 {skillBuilderOpen ? 'Close builder' : 'New skill'}
               </button>
               <a
-                href="/studio/prompts"
+                href="/studio/skills"
                 className="text-[11px] text-[var(--editor-ink-muted)] underline underline-offset-4"
               >
-                Prompt blocks
+                Skills
               </a>
             </div>
           </div>
@@ -790,6 +917,45 @@ export default function GeneratePage() {
     }
   }
 
+  async function handleNewAsset() {
+    if (!selectedProduct) return
+    const seedContext = threadContext || {}
+    const newThread = await createThread(seedContext)
+    if (!newThread) return
+    setThreads((prev) => [newThread, ...prev])
+    await loadThreadById(newThread.id)
+  }
+
+  async function handleSelectThread(id: string) {
+    if (!id || id === threadId) return
+    await loadThreadById(id)
+  }
+
+  async function handleSaveDraft() {
+    if (!threadId) return
+    const payload = serializeDraftTabs(canvasTabs)
+    const draftTitle = deriveDraftTitle(canvasTabs)
+    setDraftSaving(true)
+    await fetch(`/api/agent/threads/${threadId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        draft_content: payload,
+        draft_title: draftTitle,
+      }),
+    }).catch(() => {})
+    const updatedAt = new Date().toISOString()
+    setThreads((prev) =>
+      prev.map((t) =>
+        t.id === threadId
+          ? { ...t, draft_title: draftTitle, draft_content: payload, updated_at: updatedAt }
+          : t
+      )
+    )
+    setDraftSaving(false)
+    setDraftSavedAt(updatedAt)
+  }
+
   function insertDraftIntoCanvas(draft: string) {
     const split = splitDraftVersions(draft, versions)
     setCanvasTabs(split)
@@ -825,68 +991,63 @@ export default function GeneratePage() {
   }
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="h-full min-h-0 flex flex-col">
       <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[360px_1fr] gap-5 p-5 overflow-hidden">
         {/* Chat */}
         <section className="editor-panel flex flex-col overflow-hidden min-h-0">
           <div className="px-4 py-3 border-b border-[var(--editor-border)] bg-[var(--editor-panel)]/70">
-            <div className="flex items-center justify-between gap-4">
-              <div className="flex items-center gap-2">
-                <span className="text-[10px] uppercase tracking-[0.28em] text-[var(--editor-ink-muted)]">
-                  Agent
-                </span>
-                <span className="chat-chip chat-chip--accent">
-                  {activeSkill?.label || skill}
-                </span>
-                {activePositioning && (
-                  <span className="chat-chip">
-                    Positioning: {activePositioning.name}
-                  </span>
-                )}
-                {avatarIds.length > 0 && (
-                  <span className="chat-chip">
-                    Avatars: {avatarIds.length}
-                  </span>
-                )}
-                {activeSwipe && (
-                  <span
-                    className={`chat-chip ${
-                      activeSwipe.status === 'ready'
-                        ? 'chat-chip--accent'
-                        : activeSwipe.status === 'failed'
-                          ? 'chat-chip--warning'
-                          : 'chat-chip--muted'
-                    }`}
-                  >
-                    Swipe {activeSwipe.status === 'ready'
-                      ? 'Ready'
-                      : activeSwipe.status === 'failed'
-                        ? 'Failed'
-                        : 'Transcribing'}
-                  </span>
-                )}
-              </div>
-              <button onClick={openContextDrawer} className="editor-button-ghost text-xs">
-                Context
+            <div className="flex items-center justify-between gap-3">
+              <button onClick={handleNewAsset} className="editor-button-ghost text-xs">
+                New Asset
               </button>
+              {activeSwipe && activeSwipe.status !== 'ready' && (
+                <span className="chat-chip chat-chip--muted">
+                  Swipe {activeSwipe.status === 'failed' ? 'Failed' : 'Transcribing'}
+                </span>
+              )}
             </div>
 
-            {activeSwipe && (
-              <p className="text-[11px] text-[var(--editor-ink-muted)] mt-2 truncate">
-                {activeSwipe.title || activeSwipe.source_url || activeSwipe.id}
+            <div className="mt-3">
+              <p className="text-[10px] uppercase tracking-[0.22em] text-[var(--editor-ink-muted)]">
+                Recent Assets
               </p>
-            )}
+              <div className="mt-2 max-h-28 overflow-auto space-y-1">
+                {threadsLoading ? (
+                  <p className="text-[11px] text-[var(--editor-ink-muted)]">Loading...</p>
+                ) : recentThreads.length === 0 ? (
+                  <p className="text-[11px] text-[var(--editor-ink-muted)]">No assets yet.</p>
+                ) : (
+                  recentThreads.map((t) => {
+                    const isActive = t.id === threadId
+                    const title = t.draft_title || t.title || 'Untitled draft'
+                    return (
+                      <button
+                        key={t.id}
+                        onClick={() => handleSelectThread(t.id)}
+                        className={`w-full text-left px-3 py-2 rounded-xl text-[12px] border transition-colors ${
+                          isActive
+                            ? 'border-[var(--editor-accent)] text-[var(--editor-ink)] bg-[var(--editor-accent-soft)]'
+                            : 'border-[var(--editor-border)] text-[var(--editor-ink-muted)] hover:text-[var(--editor-ink)]'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="truncate">{title}</span>
+                          {t.updated_at && (
+                            <span className="text-[10px] text-[var(--editor-ink-muted)]">
+                              {new Date(t.updated_at).toLocaleDateString()}
+                            </span>
+                          )}
+                        </div>
+                      </button>
+                    )
+                  })
+                )}
+              </div>
+            </div>
           </div>
 
           <div ref={scrollRef} className="flex-1 overflow-auto p-4 space-y-3">
-            {messages.length === 0 ? (
-              <div className="text-[13px] text-[var(--editor-ink-muted)] leading-5">
-                <p className="font-medium text-[var(--editor-ink)]">Try this:</p>
-                <p className="mt-2">1. Paste a Meta Ad Library URL</p>
-                <p>2. Say what you want to write (script, hooks, angles)</p>
-                <p>3. Insert the draft into your canvas</p>
-              </div>
-            ) : (
+            {messages.length === 0 ? null : (
               messages.map((m, idx) => {
                 const isUser = m.role === 'user'
                 const isTool = m.role === 'tool'
@@ -1066,15 +1227,26 @@ export default function GeneratePage() {
 
         {/* Draft Canvas */}
         <section className="editor-panel flex flex-col overflow-hidden min-h-0">
-          <div className="px-5 py-3 border-b border-[var(--editor-border)] flex items-center justify-between gap-4">
-            <div>
-              <p className="text-[10px] uppercase tracking-[0.28em] text-[var(--editor-ink-muted)]">
-                Draft Canvas
-              </p>
-              <p className="font-serif text-base">Focus mode</p>
-            </div>
+          <div className="flex-1 overflow-auto p-6">
+            <textarea
+              value={canvasTabs[activeTab] || ''}
+              onChange={(e) => {
+                const val = e.target.value
+                setCanvasTabs((prev) => {
+                  const next = [...prev]
+                  next[activeTab] = val
+                  return next
+                })
+              }}
+              onSelect={handleCanvasSelect}
+              onMouseUp={handleCanvasSelect}
+              placeholder="Your draft lives here. Ask the agent for a draft, then insert it."
+              className="w-full h-full min-h-[520px] p-5 rounded-2xl border border-[var(--editor-border)] bg-[var(--editor-canvas)] text-[14px] leading-7 text-[var(--editor-ink)] focus:outline-none focus:ring-2 focus:ring-[var(--editor-accent)] resize-none"
+            />
+          </div>
 
-            {versions > 1 && (
+          <div className="px-6 py-4 border-t border-[var(--editor-border)] flex items-center justify-between gap-3">
+            {versions > 1 ? (
               <div className="flex items-center gap-2 flex-wrap">
                 {Array.from({ length: versions }).map((_, i) => (
                   <button
@@ -1090,25 +1262,20 @@ export default function GeneratePage() {
                   </button>
                 ))}
               </div>
+            ) : (
+              <span className="text-[11px] text-[var(--editor-ink-muted)]">Draft</span>
             )}
-          </div>
 
-          <div className="flex-1 overflow-auto p-6">
-            <textarea
-              value={canvasTabs[activeTab] || ''}
-              onChange={(e) => {
-                const val = e.target.value
-                setCanvasTabs((prev) => {
-                  const next = [...prev]
-                  next[activeTab] = val
-                  return next
-                })
-              }}
-              onSelect={handleCanvasSelect}
-              onMouseUp={handleCanvasSelect}
-              placeholder="Your draft lives here. Ask the agent for a draft, then insert it."
-              className="w-full h-full min-h-[520px] p-5 rounded-2xl border border-[var(--editor-border)] bg-[var(--editor-panel)] text-[15px] leading-7 text-[var(--editor-ink)] focus:outline-none focus:ring-2 focus:ring-[var(--editor-accent)] resize-none"
-            />
+            <div className="flex items-center gap-2">
+              {draftSavedAt && (
+                <span className="text-[11px] text-[var(--editor-ink-muted)]">
+                  Saved {new Date(draftSavedAt).toLocaleTimeString()}
+                </span>
+              )}
+              <button onClick={handleSaveDraft} className="editor-button text-xs">
+                {draftSaving ? 'Saving...' : 'Save'}
+              </button>
+            </div>
           </div>
         </section>
       </div>

@@ -11,6 +11,8 @@ type SwipeRow = {
   summary?: string | null
   source_url?: string | null
   created_at?: string
+  updated_at?: string
+  job_status?: 'queued' | 'running' | 'completed' | 'failed' | null
 }
 
 export default function SwipesPage() {
@@ -29,6 +31,15 @@ export default function SwipesPage() {
       return hay.includes(query)
     })
   }, [q, swipes])
+
+  const stuckCount = useMemo(() => {
+    const now = Date.now()
+    return swipes.filter((s) => {
+      if (s.status !== 'processing') return false
+      const created = s.created_at ? new Date(s.created_at).getTime() : 0
+      return created && now - created > 10 * 60 * 1000
+    }).length
+  }, [swipes])
 
   async function load() {
     if (!selectedProduct) return
@@ -118,6 +129,26 @@ export default function SwipesPage() {
           </div>
         </div>
 
+        <div className="editor-panel p-5 mb-6">
+          <p className="text-[11px] uppercase tracking-[0.22em] text-[var(--editor-ink-muted)]">
+            How it works
+          </p>
+          <p className="text-sm text-[var(--editor-ink)] mt-2">
+            We scrape the Meta Ad Library page, download the video, transcribe it with Whisper,
+            and store it in your swipe library. This requires the Render worker + an OpenAI API key.
+          </p>
+          {stuckCount > 0 && (
+            <div className="mt-4 p-3 rounded-2xl border border-[var(--editor-border)] bg-[var(--editor-panel-muted)]">
+              <p className="text-sm text-[var(--editor-ink)] font-medium">
+                {stuckCount} swipe{stuckCount > 1 ? 's are' : ' is'} stuck in processing.
+              </p>
+              <p className="text-xs text-[var(--editor-ink-muted)] mt-1">
+                Check your Render worker is running and has `OPENAI_API_KEY` set.
+              </p>
+            </div>
+          )}
+        </div>
+
         <div className="flex items-center gap-3 mb-4">
           <input
             value={q}
@@ -164,14 +195,20 @@ export default function SwipesPage() {
                     className={`editor-tag ${
                       s.status === 'ready'
                         ? 'editor-tag--note'
-                        : 'editor-tag--warning'
+                        : s.status === 'failed'
+                          ? 'editor-tag--warning'
+                          : 'editor-tag--warning'
                     }`}
                   >
                     {s.status === 'ready'
                       ? 'Ready'
                       : s.status === 'failed'
                         ? 'Failed'
-                        : 'Processing'}
+                        : s.job_status === 'queued'
+                          ? 'Queued'
+                          : s.job_status === 'running'
+                            ? 'Running'
+                            : 'Processing'}
                   </span>
                 </div>
 

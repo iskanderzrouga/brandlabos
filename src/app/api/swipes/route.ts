@@ -18,7 +18,15 @@ export async function GET(request: NextRequest) {
     if (q) {
       const like = `%${q}%`
       const rows = await sql`
-        SELECT id, product_id, source, source_url, status, title, summary, created_at, updated_at
+        SELECT
+          id, product_id, source, source_url, status, title, summary, created_at, updated_at,
+          (
+            SELECT mj.status
+            FROM media_jobs mj
+            WHERE mj.input->>'swipe_id' = swipes.id::text
+            ORDER BY mj.created_at DESC
+            LIMIT 1
+          ) AS job_status
         FROM swipes
         WHERE product_id = ${productId}
           AND (
@@ -33,7 +41,15 @@ export async function GET(request: NextRequest) {
     }
 
     const rows = await sql`
-      SELECT id, product_id, source, source_url, status, title, summary, created_at, updated_at
+      SELECT
+        id, product_id, source, source_url, status, title, summary, created_at, updated_at,
+        (
+          SELECT mj.status
+          FROM media_jobs mj
+          WHERE mj.input->>'swipe_id' = swipes.id::text
+          ORDER BY mj.created_at DESC
+          LIMIT 1
+        ) AS job_status
       FROM swipes
       WHERE product_id = ${productId}
       ORDER BY created_at DESC
@@ -45,4 +61,3 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Failed to list swipes' }, { status: 500 })
   }
 }
-

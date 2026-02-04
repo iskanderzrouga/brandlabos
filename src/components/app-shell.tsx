@@ -142,15 +142,16 @@ export function AppShell({ children }: { children: ReactNode }) {
   const selectedBrandName = brands.find((b) => b.id === selectedBrand)?.name || null
 
   const navItems = [
-    { label: 'Generate', href: '/studio', icon: <SparkIcon /> },
+    { label: 'Agent', href: '/studio', icon: <SparkIcon /> },
     { label: 'Swipes', href: '/studio/swipes', icon: <FilmIcon /> },
-    { label: 'History', href: '/studio/history', icon: <ClockIcon /> },
+    { label: 'Library', href: '/studio/library', icon: <LibraryIcon /> },
   ]
 
   const settingsItems = [
     { label: 'Organizations', href: '/studio/settings/organizations', icon: <OrgIcon /> },
     { label: 'Brands', href: '/studio/settings/brands', icon: <TagIcon /> },
     { label: 'Products', href: '/studio/settings/products', icon: <BoxIcon /> },
+    { label: 'Skills', href: '/studio/skills', icon: <SparkIcon /> },
     { label: 'Users', href: '/admin/users', icon: <UsersIcon /> },
   ]
 
@@ -173,7 +174,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         setContextDrawerExtra,
       }}
     >
-      <div className="min-h-screen bg-[var(--editor-bg)] text-[var(--editor-ink)] flex">
+      <div className="h-screen bg-[var(--editor-bg)] text-[var(--editor-ink)] flex">
         {/* Sidebar */}
         <aside
           className={`bg-[var(--editor-rail)] text-[var(--editor-rail-ink)] flex flex-col border-r border-white/10 transition-[width] duration-200 ${
@@ -284,10 +285,36 @@ export function AppShell({ children }: { children: ReactNode }) {
               )}
             </div>
           </nav>
+
+          <div className="mt-auto px-3 pb-4">
+            <div className="pt-3 border-t border-white/10">
+              {user && (
+                <div className="flex items-center gap-3">
+                  <span className="w-9 h-9 rounded-xl bg-white/10 flex items-center justify-center text-white/80">
+                    <UserIcon />
+                  </span>
+                  {!sidebarCollapsed && (
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs text-white/60">Signed in</p>
+                      <p className="text-sm text-white truncate">{user.email}</p>
+                    </div>
+                  )}
+                  <button
+                    onClick={signOut}
+                    className="w-9 h-9 rounded-xl hover:bg-white/10 grid place-items-center text-white/70"
+                    title="Sign out"
+                    aria-label="Sign out"
+                  >
+                    <LogoutIcon />
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
         </aside>
 
         {/* Main Content */}
-        <div className="flex-1 flex flex-col">
+        <div className="flex-1 flex flex-col min-h-0">
           {/* Top Bar */}
           <header className="h-16 border-b border-[var(--editor-border)] bg-[var(--editor-panel)]/70 backdrop-blur flex items-center px-6 gap-4">
             <button
@@ -312,19 +339,10 @@ export function AppShell({ children }: { children: ReactNode }) {
             </button>
 
             <div className="flex-1" />
-
-            {user && (
-              <div className="flex items-center gap-3">
-                <span className="text-sm text-[var(--editor-ink-muted)]">{user.email}</span>
-                <button onClick={signOut} className="editor-button-ghost text-sm">
-                  Sign out
-                </button>
-              </div>
-            )}
           </header>
 
           {/* Page Content */}
-          <main className="flex-1 overflow-hidden">
+          <main className="flex-1 overflow-hidden min-h-0">
             {children}
           </main>
         </div>
@@ -487,6 +505,19 @@ function ClockIcon() {
   )
 }
 
+function LibraryIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5" aria-hidden="true">
+      <path
+        d="M4 5h4v14H4V5zm6 0h4v14h-4V5zm6 0h4v14h-4V5z"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
 function GearIcon() {
   return (
     <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5" aria-hidden="true">
@@ -513,6 +544,33 @@ function ContextIcon() {
         stroke="currentColor"
         strokeWidth="1.8"
         strokeLinecap="round"
+      />
+    </svg>
+  )
+}
+
+function UserIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4" aria-hidden="true">
+      <path
+        d="M12 12a4 4 0 100-8 4 4 0 000 8zM5 20a7 7 0 0114 0"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      />
+    </svg>
+  )
+}
+
+function LogoutIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4" aria-hidden="true">
+      <path
+        d="M15 7l5 5-5 5M20 12H9M12 5H6a2 2 0 00-2 2v10a2 2 0 002 2h6"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
       />
     </svg>
   )

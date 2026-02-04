@@ -111,6 +111,19 @@ body > div {
   box-shadow: 0 0 0 3px rgba(0, 191, 166, 0.18);
 }
 
+.editor-flash {
+  animation: editorFlash 1.2s ease;
+}
+
+@keyframes editorFlash {
+  0% {
+    box-shadow: 0 0 0 3px rgba(0, 191, 166, 0.25);
+  }
+  100% {
+    box-shadow: none;
+  }
+}
+
 .editor-chip {
   background: var(--editor-panel-muted);
   color: var(--editor-ink-muted);
@@ -149,6 +162,64 @@ body > div {
   cursor: not-allowed;
   transform: none;
   box-shadow: none;
+}
+
+.editor-icon-button {
+  background: var(--editor-accent);
+  color: #fff;
+  border-radius: 999px;
+  width: 38px;
+  height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 12px 26px -18px rgba(42, 157, 143, 0.55);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.editor-icon-button svg {
+  width: 18px;
+  height: 18px;
+}
+
+.editor-icon-button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 16px 28px -18px rgba(42, 157, 143, 0.5);
+}
+
+.editor-icon-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.editor-icon-ghost {
+  background: transparent;
+  border: 1px solid var(--editor-border);
+  color: var(--editor-ink);
+  border-radius: 999px;
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.2s ease, color 0.2s ease;
+}
+
+.editor-icon-ghost svg {
+  width: 16px;
+  height: 16px;
+}
+
+.editor-icon-ghost:hover {
+  border-color: var(--editor-ink);
+  color: var(--editor-ink);
+}
+
+.editor-icon-ghost:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .editor-button-ghost {

@@ -135,6 +135,24 @@ function isMetaAdLibraryUrlCandidate(text: string) {
   return /facebook\.com\/ads\/library\//i.test(text)
 }
 
+function computeDiffRange(oldText: string, newText: string) {
+  if (oldText === newText) return null
+  const minLen = Math.min(oldText.length, newText.length)
+  let start = 0
+  while (start < minLen && oldText[start] === newText[start]) {
+    start += 1
+  }
+  let endOld = oldText.length - 1
+  let endNew = newText.length - 1
+  while (endOld >= start && endNew >= start && oldText[endOld] === newText[endNew]) {
+    endOld -= 1
+    endNew -= 1
+  }
+  const end = Math.max(start, endNew + 1)
+  if (end <= start) return null
+  return { start, end }
+}
+
 function slugify(value: string) {
   return value
     .toLowerCase()
@@ -184,11 +202,21 @@ export default function GeneratePage() {
   const [selectionQueue, setSelectionQueue] = useState<Array<{ id: string; text: string; note: string }>>([])
   const [activeSelectionId, setActiveSelectionId] = useState<string | null>(null)
   const [queueExpanded, setQueueExpanded] = useState<Record<string, boolean>>({})
+  const [pendingAutoApply, setPendingAutoApply] = useState(false)
+  const [highlightState, setHighlightState] = useState<{ tab: number; start: number; end: number } | null>(null)
+  const [flashActive, setFlashActive] = useState(false)
+  const [historyVersion, setHistoryVersion] = useState(0)
 
   // Editor
   const [activeTab, setActiveTab] = useState(0)
   const [canvasTabs, setCanvasTabs] = useState<string[]>([''])
   const canvasRef = useRef<string[]>([''])
+  const canvasTextareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const pendingAutoApplyRef = useRef(false)
+  const suppressSelectionRef = useRef(false)
+  const historyRef = useRef<Record<number, { entries: string[]; index: number }>>({})
+  const historyLockRef = useRef(false)
+  const historyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const scrollRef = useRef<HTMLDivElement | null>(null)
 
@@ -207,6 +235,14 @@ export default function GeneratePage() {
   const canvasHasContent = canvasTabs.some((t) => t.trim().length > 0)
   const hasQueuedNotes = selectionQueue.some(
     (item) => item.text.trim().length > 0 && item.note.trim().length > 0
+  )
+  const historyState = useMemo(
+    () => historyRef.current[activeTab],
+    [activeTab, historyVersion]
+  )
+  const canUndo = Boolean(historyState && historyState.index > 0)
+  const canRedo = Boolean(
+    historyState && historyState.index < historyState.entries.length - 1
   )
 
   const skillOptions = useMemo<SkillOption[]>(() => {
@@ -254,13 +290,77 @@ export default function GeneratePage() {
     canvasRef.current = canvasTabs
   }, [canvasTabs])
 
+  useEffect(() => {
+    if (!threadId) return
+    const history = historyRef.current
+    canvasTabs.forEach((tab, idx) => {
+      if (!history[idx]) {
+        history[idx] = { entries: [tab || ''], index: 0 }
+      }
+    })
+  }, [canvasTabs, threadId])
+
+  useEffect(() => {
+    if (!threadId) return
+    if (historyLockRef.current) return
+    const current = canvasTabs[activeTab] || ''
+    if (historyTimerRef.current) clearTimeout(historyTimerRef.current)
+    historyTimerRef.current = setTimeout(() => {
+      const history = historyRef.current
+      const entry = history[activeTab] || { entries: [], index: -1 }
+      const existing = entry.entries[entry.index]
+      if (existing === current) return
+      const nextEntries = entry.entries.slice(0, entry.index + 1).concat(current)
+      history[activeTab] = { entries: nextEntries, index: nextEntries.length - 1 }
+      setHistoryVersion((v) => v + 1)
+    }, 350)
+    return () => {
+      if (historyTimerRef.current) clearTimeout(historyTimerRef.current)
+    }
+  }, [canvasTabs, activeTab, threadId])
+
+  useEffect(() => {
+    if (!highlightState || !flashActive) return
+    if (highlightState.tab !== activeTab) return
+    const el = canvasTextareaRef.current
+    if (!el) return
+    suppressSelectionRef.current = true
+    requestAnimationFrame(() => {
+      try {
+        el.focus()
+        el.setSelectionRange(highlightState.start, highlightState.end)
+      } catch {
+        // ignore selection errors
+      }
+    })
+    const timer = setTimeout(() => {
+      if (canvasTextareaRef.current) {
+        try {
+          canvasTextareaRef.current.setSelectionRange(0, 0)
+        } catch {
+          // ignore
+        }
+      }
+      suppressSelectionRef.current = false
+      setFlashActive(false)
+      setHighlightState(null)
+    }, 1200)
+    return () => clearTimeout(timer)
+  }, [highlightState, flashActive, activeTab])
+
   const storageKey = selectedProduct ? `bl_active_thread_${selectedProduct}` : null
 
   const loadThreadById = useCallback(async (id: string) => {
     if (!id) return
     setThreadHydrating(true)
     setMessages([])
-    setThreadId(null)
+    setThreadId(id)
+    setThreadContext({})
+    setCanvasTabs([''])
+    setActiveTab(0)
+    setDraftVisibility({})
+    setDraftSavedAt(null)
+    historyRef.current = {}
 
     const threadRes = await fetch(`/api/agent/threads/${id}`)
     if (!threadRes.ok) {
@@ -276,6 +376,11 @@ export default function GeneratePage() {
     setCanvasTabs(tabs)
     setActiveTab(0)
     setDraftSavedAt(thread.updated_at || null)
+    historyRef.current = {}
+    tabs.forEach((tab, idx) => {
+      historyRef.current[idx] = { entries: [tab || ''], index: 0 }
+    })
+    setHistoryVersion((v) => v + 1)
 
     const msgRes = await fetch(`/api/agent/messages?thread_id=${thread.id}`)
     if (msgRes.ok) {
@@ -329,24 +434,17 @@ export default function GeneratePage() {
 
       const params = new URLSearchParams(window.location.search)
       const threadFromUrl = params.get('thread')
-      const storedThread = storageKey ? localStorage.getItem(storageKey) : null
-      const candidateId = threadFromUrl || storedThread
-      const candidateExists = candidateId && threadsList.some((t: any) => t.id === candidateId)
+      const candidateExists = threadFromUrl && threadsList.some((t: any) => t.id === threadFromUrl)
 
       if (candidateExists) {
-        await loadThreadById(candidateId as string)
-        return
-      }
-
-      if (threadsList.length > 0) {
-        await loadThreadById(threadsList[0].id)
+        await loadThreadById(threadFromUrl as string)
       }
     }
     run()
     return () => {
       active = false
     }
-  }, [selectedProduct, storageKey, loadThreadById, createThread])
+  }, [selectedProduct, storageKey, loadThreadById])
 
   // Apply swipe param from Swipes page
   useEffect(() => {
@@ -983,6 +1081,92 @@ export default function GeneratePage() {
     })
   }
 
+  function resetEditorState() {
+    setThreadId(null)
+    setThreadContext({})
+    setMessages([])
+    setCanvasTabs([''])
+    setActiveTab(0)
+    setDraftSavedAt(null)
+    setComposer('')
+    setSelectionText('')
+    setSelectionNote('')
+    setSelectionQueue([])
+    setActiveSelectionId(null)
+    setQueueExpanded({})
+    setPendingAutoApply(false)
+    pendingAutoApplyRef.current = false
+    setHighlightState(null)
+    setFlashActive(false)
+    setDraftVisibility({})
+    setThreadHydrating(false)
+    historyRef.current = {}
+    setHistoryVersion((v) => v + 1)
+  }
+
+  function exitAssetView() {
+    if (storageKey) {
+      localStorage.removeItem(storageKey)
+    }
+    const params = new URLSearchParams(window.location.search)
+    params.delete('thread')
+    window.history.replaceState(null, '', `/studio?${params.toString()}`)
+    resetEditorState()
+  }
+
+  function triggerCanvasHighlight(tabIndex: number, oldText: string, newText: string) {
+    const diff = computeDiffRange(oldText, newText)
+    if (!diff) return
+    setHighlightState({ tab: tabIndex, ...diff })
+    setFlashActive(true)
+  }
+
+  function applyDraftAuto(draft: string) {
+    const split = splitDraftVersions(draft, versions)
+    const targetTab = Math.min(activeTab, split.length - 1)
+    const oldText = canvasTabs[targetTab] || ''
+    const newText = split[targetTab] || ''
+    setCanvasTabs(split)
+    setActiveTab(targetTab)
+    triggerCanvasHighlight(targetTab, oldText, newText)
+  }
+
+  function undoCanvas() {
+    const history = historyRef.current[activeTab]
+    if (!history || history.index <= 0) return
+    historyLockRef.current = true
+    const nextIndex = history.index - 1
+    history.index = nextIndex
+    const nextValue = history.entries[nextIndex] ?? ''
+    setCanvasTabs((prev) => {
+      const next = [...prev]
+      next[activeTab] = nextValue
+      return next
+    })
+    setHistoryVersion((v) => v + 1)
+    requestAnimationFrame(() => {
+      historyLockRef.current = false
+    })
+  }
+
+  function redoCanvas() {
+    const history = historyRef.current[activeTab]
+    if (!history || history.index >= history.entries.length - 1) return
+    historyLockRef.current = true
+    const nextIndex = history.index + 1
+    history.index = nextIndex
+    const nextValue = history.entries[nextIndex] ?? ''
+    setCanvasTabs((prev) => {
+      const next = [...prev]
+      next[activeTab] = nextValue
+      return next
+    })
+    setHistoryVersion((v) => v + 1)
+    requestAnimationFrame(() => {
+      historyLockRef.current = false
+    })
+  }
+
   async function sendMessage() {
     if (!threadId || sending) return
     const text = composer.trim()
@@ -991,6 +1175,8 @@ export default function GeneratePage() {
     )
     const hasQueuedNotes = queuedNotes.length > 0
     if (!text && !hasQueuedNotes) return
+    setPendingAutoApply(hasQueuedNotes)
+    pendingAutoApplyRef.current = hasQueuedNotes
 
     const notePayload = hasQueuedNotes
       ? queuedNotes
@@ -1046,18 +1232,27 @@ export default function GeneratePage() {
       const assistantMessage = data.assistant_message
       const draft = extractDraftBlock(assistantMessage)
       const canvasEmpty = canvasRef.current.every((t) => !t.trim())
+      const shouldAutoApply = pendingAutoApplyRef.current
+      pendingAutoApplyRef.current = false
+      setPendingAutoApply(false)
 
       setThreadContext((prev) => ({ ...prev, ...(data.thread_context || {}) }))
       setMessages((prev) => [...prev, { role: 'assistant', content: assistantMessage }])
 
-      if (draft && canvasEmpty) {
-        insertDraftIntoCanvas(draft, 'replace')
+      if (draft) {
+        if (shouldAutoApply) {
+          applyDraftAuto(draft)
+        } else if (canvasEmpty) {
+          insertDraftIntoCanvas(draft, 'replace')
+        }
       }
       queueMicrotask(() => scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }))
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to send'
       setMessages((prev) => [...prev, { role: 'tool', content: msg }])
     } finally {
+      pendingAutoApplyRef.current = false
+      setPendingAutoApply(false)
       setSending(false)
     }
   }
@@ -1096,18 +1291,7 @@ export default function GeneratePage() {
       if (nextThreads[0]) {
         await loadThreadById(nextThreads[0].id)
       } else {
-        setThreadId(null)
-        setThreadContext({})
-        setMessages([])
-        setCanvasTabs([''])
-        setActiveTab(0)
-        setDraftSavedAt(null)
-        setComposer('')
-        setSelectionText('')
-        setSelectionNote('')
-        setSelectionQueue([])
-        setActiveSelectionId(null)
-        setQueueExpanded({})
+        resetEditorState()
       }
     }
   }
@@ -1169,6 +1353,7 @@ export default function GeneratePage() {
   }
 
   function handleCanvasSelect(e: React.SyntheticEvent<HTMLTextAreaElement>) {
+    if (suppressSelectionRef.current) return
     const target = e.currentTarget
     const start = target.selectionStart || 0
     const end = target.selectionEnd || 0
@@ -1208,6 +1393,61 @@ export default function GeneratePage() {
     )
   }
 
+  if (!threadId && !threadHydrating) {
+    return (
+      <div className="h-full flex items-center justify-center p-6">
+        <div className="editor-panel w-full max-w-2xl p-6">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div>
+              <p className="text-[10px] uppercase tracking-[0.28em] text-[var(--editor-ink-muted)]">
+                Studio
+              </p>
+              <p className="text-sm text-[var(--editor-ink-muted)] mt-2">
+                Start a new asset or jump back into a recent one.
+              </p>
+            </div>
+            <button onClick={handleNewAsset} className="editor-button">
+              New Asset
+            </button>
+          </div>
+
+          <div className="mt-6">
+            <p className="text-[10px] uppercase tracking-[0.22em] text-[var(--editor-ink-muted)]">
+              Recent Assets
+            </p>
+            <div className="mt-3 space-y-2 max-h-72 overflow-auto pr-1">
+              {threadsLoading ? (
+                <p className="text-[11px] text-[var(--editor-ink-muted)]">Loading...</p>
+              ) : recentThreads.length === 0 ? (
+                <p className="text-[11px] text-[var(--editor-ink-muted)]">
+                  No assets yet. Create a new one to get started.
+                </p>
+              ) : (
+                recentThreads.map((t) => {
+                  const label = t.draft_title || t.title || 'Untitled draft'
+                  return (
+                    <button
+                      key={t.id}
+                      onClick={() => handleSelectThread(t.id)}
+                      className="w-full text-left rounded-full border border-[var(--editor-border)] px-3 py-2 text-[12px] text-[var(--editor-ink)] hover:border-[var(--editor-ink)] transition-colors"
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="truncate">{label}</span>
+                        <span className="text-[10px] text-[var(--editor-ink-muted)] whitespace-nowrap">
+                          {t.updated_at ? new Date(t.updated_at).toLocaleDateString() : ''}
+                        </span>
+                      </div>
+                    </button>
+                  )
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="h-full min-h-0 flex flex-col">
       <div className="flex-1 min-h-0 h-full grid grid-cols-1 lg:grid-cols-[360px_1fr] gap-5 p-5 overflow-hidden">
@@ -1228,61 +1468,28 @@ export default function GeneratePage() {
                   </button>
                 )}
               </div>
-              {activeSwipe && activeSwipe.status !== 'ready' && (
-                <span className="chat-chip chat-chip--muted">
-                  Swipe {activeSwipe.status === 'failed' ? 'Failed' : 'Transcribing'}
-                </span>
-              )}
-            </div>
-
-            <div className="mt-3">
-              <p className="text-[10px] uppercase tracking-[0.22em] text-[var(--editor-ink-muted)]">
-                Recent Assets
-              </p>
-              <div className="mt-2 max-h-28 overflow-auto space-y-1">
-                {threadsLoading ? (
-                  <p className="text-[11px] text-[var(--editor-ink-muted)]">Loading...</p>
-                ) : recentThreads.length === 0 ? (
-                  <p className="text-[11px] text-[var(--editor-ink-muted)]">No assets yet.</p>
-                ) : (
-                  recentThreads.map((t) => {
-                    const isActive = t.id === threadId
-                    const title = t.draft_title || t.title || 'Untitled draft'
-                    return (
-                      <button
-                        key={t.id}
-                        onClick={() => handleSelectThread(t.id)}
-                        className={`w-full text-left px-3 py-2 rounded-xl text-[12px] border transition-colors ${
-                          isActive
-                            ? 'border-[var(--editor-accent)] text-[var(--editor-ink)] bg-[var(--editor-accent-soft)]'
-                            : 'border-[var(--editor-border)] text-[var(--editor-ink-muted)] hover:text-[var(--editor-ink)]'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between gap-3">
-                          <span className="truncate">{title}</span>
-                          {t.updated_at && (
-                            <span className="text-[10px] text-[var(--editor-ink-muted)]">
-                              {new Date(t.updated_at).toLocaleDateString()}
-                            </span>
-                          )}
-                        </div>
-                      </button>
-                    )
-                  })
+              <div className="flex items-center gap-2">
+                {activeSwipe && activeSwipe.status !== 'ready' && (
+                  <span className="chat-chip chat-chip--muted">
+                    Swipe {activeSwipe.status === 'failed' ? 'Failed' : 'Transcribing'}
+                  </span>
                 )}
+                <button
+                  onClick={exitAssetView}
+                  className="editor-button-ghost text-xs"
+                  aria-label="Close asset"
+                >
+                  X
+                </button>
               </div>
             </div>
           </div>
 
           {!threadId ? (
             <div className="flex-1 p-6 flex flex-col items-center justify-center text-center gap-3">
-              <p className="font-medium text-[var(--editor-ink)]">No assets yet.</p>
-              <p className="text-sm text-[var(--editor-ink-muted)] max-w-sm">
-                Create your first asset to start chatting with the agent and saving drafts.
+              <p className="font-medium text-[var(--editor-ink)]">
+                {threadHydrating ? 'Loading asset...' : 'No asset selected.'}
               </p>
-              <button onClick={handleNewAsset} className="editor-button">
-                Create New Asset
-              </button>
             </div>
           ) : (
             <>
@@ -1380,9 +1587,9 @@ export default function GeneratePage() {
                     e.preventDefault()
                     sendMessage()
                   }}
-                  className="flex items-end gap-3"
+                  className="flex flex-col gap-3"
                 >
-                  <div className="flex-1">
+                  <div>
                     {selectionText && (
                       <div className="mb-3 rounded-2xl border border-[var(--editor-border)] bg-[var(--editor-panel-muted)] p-3 space-y-2">
                         <div className="flex items-center justify-between">
@@ -1488,13 +1695,21 @@ export default function GeneratePage() {
                       className="editor-input w-full text-[13px] leading-5 resize-none"
                     />
                   </div>
-                  <button
-                    type="submit"
-                    className="editor-button"
-                    disabled={!threadId || sending || (!composer.trim() && !hasQueuedNotes)}
-                  >
-                    {sending ? 'Sending...' : 'Send'}
-                  </button>
+                  <div className="flex justify-end">
+                    <button
+                      type="submit"
+                      className="editor-icon-button"
+                      disabled={!threadId || sending || (!composer.trim() && !hasQueuedNotes)}
+                      aria-label={pendingAutoApply ? 'Send queued edits' : 'Send message'}
+                    >
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path
+                          d="M12 4l6 6-1.4 1.4-3.6-3.6V20h-2V7.8L7.4 11.4 6 10l6-6z"
+                          fill="currentColor"
+                        />
+                      </svg>
+                    </button>
+                  </div>
                 </form>
               </div>
             </>
@@ -1505,6 +1720,7 @@ export default function GeneratePage() {
         <section className="editor-panel flex flex-col overflow-hidden min-h-0">
           <div className="flex-1 overflow-auto p-6">
             <textarea
+              ref={canvasTextareaRef}
               value={canvasTabs[activeTab] || ''}
               onChange={(e) => {
                 const val = e.target.value
@@ -1514,6 +1730,16 @@ export default function GeneratePage() {
                   return next
                 })
               }}
+              onKeyDown={(e) => {
+                if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
+                  e.preventDefault()
+                  if (e.shiftKey) {
+                    redoCanvas()
+                  } else {
+                    undoCanvas()
+                  }
+                }
+              }}
               onSelect={handleCanvasSelect}
               onMouseUp={handleCanvasSelect}
               placeholder={
@@ -1522,7 +1748,9 @@ export default function GeneratePage() {
                   : 'Create an asset to start drafting.'
               }
               disabled={!threadId}
-              className="w-full h-full min-h-[520px] p-5 rounded-2xl border border-[var(--editor-border)] bg-[var(--editor-canvas)] text-[14px] leading-7 text-[var(--editor-ink)] focus:outline-none focus:ring-2 focus:ring-[var(--editor-accent)] resize-none"
+              className={`w-full h-full min-h-[520px] p-5 rounded-2xl border border-[var(--editor-border)] bg-[var(--editor-canvas)] text-[14px] leading-7 text-[var(--editor-ink)] focus:outline-none focus:ring-2 focus:ring-[var(--editor-accent)] resize-none ${
+                flashActive && highlightState?.tab === activeTab ? 'editor-flash' : ''
+              }`}
             />
           </div>
 
@@ -1548,6 +1776,32 @@ export default function GeneratePage() {
             )}
 
             <div className="flex items-center gap-2">
+              <button
+                onClick={undoCanvas}
+                disabled={!canUndo}
+                className="editor-icon-ghost"
+                aria-label="Undo"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    d="M7.8 7H4l4-4 4 4H8.8c4.4 0 7.2 1.2 9.2 3.2C19.7 11.9 21 14.5 21 18h-2c0-3-1-5-2.4-6.4C15.1 10.1 12.8 9 8.8 9H7.8V7z"
+                    fill="currentColor"
+                  />
+                </svg>
+              </button>
+              <button
+                onClick={redoCanvas}
+                disabled={!canRedo}
+                className="editor-icon-ghost"
+                aria-label="Redo"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    d="M16.2 7H20l-4-4-4 4h3.2v2h-1c-4 0-6.3 1.1-7.8 2.6C4.9 13 4 15 4 18h2c0-3 0.8-5 2-6.4C9.2 10 11.1 9 14.2 9h1V7z"
+                    fill="currentColor"
+                  />
+                </svg>
+              </button>
               {draftSavedAt && (
                 <span className="text-[11px] text-[var(--editor-ink-muted)]">
                   Saved {new Date(draftSavedAt).toLocaleTimeString()}

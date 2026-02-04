@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createAdminClient } from '@/lib/supabase/server'
+import { sql } from '@/lib/db'
 import { updateOrganizationSchema } from '@/lib/validations'
 
 type Params = { params: Promise<{ id: string }> }
@@ -8,22 +8,18 @@ type Params = { params: Promise<{ id: string }> }
 export async function GET(request: NextRequest, { params }: Params) {
   try {
     const { id } = await params
-    const supabase = createAdminClient()
+    const rows = await sql`
+      SELECT *
+      FROM organizations
+      WHERE id = ${id}
+      LIMIT 1
+    `
 
-    const { data, error } = await supabase
-      .from('organizations')
-      .select('*')
-      .eq('id', id)
-      .single()
-
-    if (error) {
-      if (error.code === 'PGRST116') {
-        return NextResponse.json({ error: 'Organization not found' }, { status: 404 })
-      }
-      return NextResponse.json({ error: error.message }, { status: 500 })
+    if (!rows[0]) {
+      return NextResponse.json({ error: 'Organization not found' }, { status: 404 })
     }
 
-    return NextResponse.json(data)
+    return NextResponse.json(rows[0])
   } catch (error) {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
@@ -43,23 +39,24 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       )
     }
 
-    const supabase = createAdminClient()
+    const name = validated.data.name ?? null
+    const slug = validated.data.slug ?? null
 
-    const { data, error } = await supabase
-      .from('organizations')
-      .update(validated.data)
-      .eq('id', id)
-      .select()
-      .single()
+    const rows = await sql`
+      UPDATE organizations
+      SET
+        name = COALESCE(${name}, name),
+        slug = COALESCE(${slug}, slug),
+        updated_at = NOW()
+      WHERE id = ${id}
+      RETURNING *
+    `
 
-    if (error) {
-      if (error.code === 'PGRST116') {
-        return NextResponse.json({ error: 'Organization not found' }, { status: 404 })
-      }
-      return NextResponse.json({ error: error.message }, { status: 500 })
+    if (!rows[0]) {
+      return NextResponse.json({ error: 'Organization not found' }, { status: 404 })
     }
 
-    return NextResponse.json(data)
+    return NextResponse.json(rows[0])
   } catch (error) {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
@@ -69,15 +66,14 @@ export async function PATCH(request: NextRequest, { params }: Params) {
 export async function DELETE(request: NextRequest, { params }: Params) {
   try {
     const { id } = await params
-    const supabase = createAdminClient()
+    const rows = await sql`
+      DELETE FROM organizations
+      WHERE id = ${id}
+      RETURNING id
+    `
 
-    const { error } = await supabase
-      .from('organizations')
-      .delete()
-      .eq('id', id)
-
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 })
+    if (!rows[0]) {
+      return NextResponse.json({ error: 'Organization not found' }, { status: 404 })
     }
 
     return NextResponse.json({ success: true })

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createAdminClient } from '@/lib/supabase/server'
+import { sql } from '@/lib/db'
 import { updatePromptBlockSchema } from '@/lib/validations'
 
 type Params = { params: Promise<{ id: string }> }
@@ -8,22 +8,18 @@ type Params = { params: Promise<{ id: string }> }
 export async function GET(request: NextRequest, { params }: Params) {
   try {
     const { id } = await params
-    const supabase = createAdminClient()
+    const rows = await sql`
+      SELECT *
+      FROM prompt_blocks
+      WHERE id = ${id}
+      LIMIT 1
+    `
 
-    const { data, error } = await supabase
-      .from('prompt_blocks')
-      .select('*')
-      .eq('id', id)
-      .single()
-
-    if (error) {
-      if (error.code === 'PGRST116') {
-        return NextResponse.json({ error: 'Prompt block not found' }, { status: 404 })
-      }
-      return NextResponse.json({ error: error.message }, { status: 500 })
+    if (!rows[0]) {
+      return NextResponse.json({ error: 'Prompt block not found' }, { status: 404 })
     }
 
-    return NextResponse.json(data)
+    return NextResponse.json(rows[0])
   } catch (error) {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
@@ -46,66 +42,70 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       )
     }
 
-    const supabase = createAdminClient()
+    const existingRows = await sql`
+      SELECT *
+      FROM prompt_blocks
+      WHERE id = ${id}
+      LIMIT 1
+    `
 
-    // Get existing block
-    const { data: existing, error: fetchError } = await supabase
-      .from('prompt_blocks')
-      .select('*')
-      .eq('id', id)
-      .single()
-
-    if (fetchError) {
-      if (fetchError.code === 'PGRST116') {
-        return NextResponse.json({ error: 'Prompt block not found' }, { status: 404 })
-      }
-      return NextResponse.json({ error: fetchError.message }, { status: 500 })
+    const existing = existingRows[0]
+    if (!existing) {
+      return NextResponse.json({ error: 'Prompt block not found' }, { status: 404 })
     }
 
     // If content is changing, create a new version instead of updating
     if (validated.data.content && validated.data.content !== existing.content) {
       // Deactivate current version
-      await supabase
-        .from('prompt_blocks')
-        .update({ is_active: false })
-        .eq('id', id)
+      await sql`
+        UPDATE prompt_blocks
+        SET is_active = false
+        WHERE id = ${id}
+      `
 
       // Create new version
-      const { data: newVersion, error: createError } = await supabase
-        .from('prompt_blocks')
-        .insert({
-          name: validated.data.name ?? existing.name,
-          type: existing.type,
-          scope: existing.scope,
-          scope_id: existing.scope_id,
-          content: validated.data.content,
-          version: existing.version + 1,
-          is_active: true,
-          metadata: validated.data.metadata ?? existing.metadata,
-        })
-        .select()
-        .single()
+      const newRows = await sql`
+        INSERT INTO prompt_blocks (
+          name,
+          type,
+          scope,
+          scope_id,
+          content,
+          version,
+          is_active,
+          metadata
+        ) VALUES (
+          ${validated.data.name ?? existing.name},
+          ${existing.type},
+          ${existing.scope},
+          ${existing.scope_id},
+          ${validated.data.content},
+          ${existing.version + 1},
+          true,
+          ${validated.data.metadata ?? existing.metadata ?? {}}
+        )
+        RETURNING *
+      `
 
-      if (createError) {
-        return NextResponse.json({ error: createError.message }, { status: 500 })
-      }
-
-      return NextResponse.json(newVersion)
+      return NextResponse.json(newRows[0])
     }
 
     // Otherwise, just update metadata/name/is_active
-    const { data, error } = await supabase
-      .from('prompt_blocks')
-      .update(validated.data)
-      .eq('id', id)
-      .select()
-      .single()
+    const name = validated.data.name ?? null
+    const isActive = validated.data.is_active ?? null
+    const metadata = validated.data.metadata ?? null
 
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 })
-    }
+    const rows = await sql`
+      UPDATE prompt_blocks
+      SET
+        name = COALESCE(${name}, name),
+        is_active = COALESCE(${isActive}, is_active),
+        metadata = COALESCE(${metadata}, metadata)
+      WHERE id = ${id}
+      RETURNING *
+    `
 
-    return NextResponse.json(data)
+    return NextResponse.json(rows[0])
   } catch (error) {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
@@ -115,15 +115,14 @@ export async function PATCH(request: NextRequest, { params }: Params) {
 export async function DELETE(request: NextRequest, { params }: Params) {
   try {
     const { id } = await params
-    const supabase = createAdminClient()
+    const rows = await sql`
+      DELETE FROM prompt_blocks
+      WHERE id = ${id}
+      RETURNING id
+    `
 
-    const { error } = await supabase
-      .from('prompt_blocks')
-      .delete()
-      .eq('id', id)
-
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 })
+    if (!rows[0]) {
+      return NextResponse.json({ error: 'Prompt block not found' }, { status: 404 })
     }
 
     return NextResponse.json({ success: true })

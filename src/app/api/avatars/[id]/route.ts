@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createAdminClient } from '@/lib/supabase/server'
+import { sql } from '@/lib/db'
 import { updateAvatarSchema } from '@/lib/validations'
 
 type Params = { params: Promise<{ id: string }> }
@@ -8,22 +8,32 @@ type Params = { params: Promise<{ id: string }> }
 export async function GET(request: NextRequest, { params }: Params) {
   try {
     const { id } = await params
-    const supabase = createAdminClient()
+    const rows = await sql`
+      SELECT
+        avatars.*,
+        jsonb_build_object(
+          'name', products.name,
+          'slug', products.slug,
+          'brand_id', products.brand_id,
+          'context', products.context,
+          'brands', jsonb_build_object(
+            'name', brands.name,
+            'slug', brands.slug,
+            'organization_id', brands.organization_id
+          )
+        ) AS products
+      FROM avatars
+      JOIN products ON products.id = avatars.product_id
+      JOIN brands ON brands.id = products.brand_id
+      WHERE avatars.id = ${id}
+      LIMIT 1
+    `
 
-    const { data, error } = await supabase
-      .from('avatars')
-      .select('*, products(name, slug, brand_id, context, brands(name, slug, organization_id))')
-      .eq('id', id)
-      .single()
-
-    if (error) {
-      if (error.code === 'PGRST116') {
-        return NextResponse.json({ error: 'Avatar not found' }, { status: 404 })
-      }
-      return NextResponse.json({ error: error.message }, { status: 500 })
+    if (!rows[0]) {
+      return NextResponse.json({ error: 'Avatar not found' }, { status: 404 })
     }
 
-    return NextResponse.json(data)
+    return NextResponse.json(rows[0])
   } catch (error) {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
@@ -43,23 +53,26 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       )
     }
 
-    const supabase = createAdminClient()
+    const name = validated.data.name ?? null
+    const content = validated.data.content ?? null
+    const isActive = validated.data.is_active ?? null
 
-    const { data, error } = await supabase
-      .from('avatars')
-      .update(validated.data)
-      .eq('id', id)
-      .select()
-      .single()
+    const rows = await sql`
+      UPDATE avatars
+      SET
+        name = COALESCE(${name}, name),
+        content = COALESCE(${content}, content),
+        is_active = COALESCE(${isActive}, is_active),
+        updated_at = NOW()
+      WHERE id = ${id}
+      RETURNING *
+    `
 
-    if (error) {
-      if (error.code === 'PGRST116') {
-        return NextResponse.json({ error: 'Avatar not found' }, { status: 404 })
-      }
-      return NextResponse.json({ error: error.message }, { status: 500 })
+    if (!rows[0]) {
+      return NextResponse.json({ error: 'Avatar not found' }, { status: 404 })
     }
 
-    return NextResponse.json(data)
+    return NextResponse.json(rows[0])
   } catch (error) {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
@@ -69,15 +82,14 @@ export async function PATCH(request: NextRequest, { params }: Params) {
 export async function DELETE(request: NextRequest, { params }: Params) {
   try {
     const { id } = await params
-    const supabase = createAdminClient()
+    const rows = await sql`
+      DELETE FROM avatars
+      WHERE id = ${id}
+      RETURNING id
+    `
 
-    const { error } = await supabase
-      .from('avatars')
-      .delete()
-      .eq('id', id)
-
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 })
+    if (!rows[0]) {
+      return NextResponse.json({ error: 'Avatar not found' }, { status: 404 })
     }
 
     return NextResponse.json({ success: true })

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createAdminClient } from '@/lib/supabase/server'
+import { sql } from '@/lib/db'
 import { z } from 'zod'
 
 const createPitchSchema = z.object({
@@ -17,28 +17,21 @@ export async function GET(request: NextRequest) {
     const productId = searchParams.get('product_id')
     const activeOnly = searchParams.get('active_only') === 'true'
 
-    const supabase = createAdminClient()
-
-    let query = supabase
-      .from('pitches')
-      .select('*')
-      .order('created_at', { ascending: false })
+    let rows = await sql`
+      SELECT *
+      FROM pitches
+      ORDER BY created_at DESC
+    `
 
     if (productId) {
-      query = query.eq('product_id', productId)
+      rows = rows.filter((row: any) => row.product_id === productId)
     }
 
     if (activeOnly) {
-      query = query.eq('is_active', true)
+      rows = rows.filter((row: any) => row.is_active)
     }
 
-    const { data, error } = await query
-
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 })
-    }
-
-    return NextResponse.json(data)
+    return NextResponse.json(rows)
   } catch (error) {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
@@ -57,19 +50,22 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const supabase = createAdminClient()
-
-    const { data, error } = await supabase
-      .from('pitches')
-      .insert(validated.data)
-      .select()
-      .single()
-
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 })
+    try {
+      const rows = await sql`
+        INSERT INTO pitches (product_id, name, content, type, is_active)
+        VALUES (
+          ${validated.data.product_id},
+          ${validated.data.name},
+          ${validated.data.content},
+          ${validated.data.type ?? 'general'},
+          ${validated.data.is_active ?? true}
+        )
+        RETURNING *
+      `
+      return NextResponse.json(rows[0], { status: 201 })
+    } catch (error: any) {
+      return NextResponse.json({ error: error?.message || 'Database error' }, { status: 500 })
     }
-
-    return NextResponse.json(data, { status: 201 })
   } catch (error) {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }

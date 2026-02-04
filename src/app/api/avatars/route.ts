@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createAdminClient } from '@/lib/supabase/server'
+import { sql } from '@/lib/db'
 import { createAvatarSchema } from '@/lib/validations'
 
 // GET /api/avatars - List all avatars (optionally filtered by product)
@@ -9,28 +9,32 @@ export async function GET(request: NextRequest) {
     const productId = searchParams.get('product_id')
     const activeOnly = searchParams.get('active_only') === 'true'
 
-    const supabase = createAdminClient()
+    const baseQuery = activeOnly
+      ? sql`
+          SELECT
+            avatars.*,
+            jsonb_build_object('name', products.name, 'slug', products.slug, 'brand_id', products.brand_id) AS products
+          FROM avatars
+          JOIN products ON products.id = avatars.product_id
+          WHERE avatars.is_active = true
+          ORDER BY avatars.created_at DESC
+        `
+      : sql`
+          SELECT
+            avatars.*,
+            jsonb_build_object('name', products.name, 'slug', products.slug, 'brand_id', products.brand_id) AS products
+          FROM avatars
+          JOIN products ON products.id = avatars.product_id
+          ORDER BY avatars.created_at DESC
+        `
 
-    let query = supabase
-      .from('avatars')
-      .select('*, products(name, slug, brand_id)')
-      .order('created_at', { ascending: false })
+    let rows = await baseQuery
 
     if (productId) {
-      query = query.eq('product_id', productId)
+      rows = rows.filter((row: any) => row.product_id === productId)
     }
 
-    if (activeOnly) {
-      query = query.eq('is_active', true)
-    }
-
-    const { data, error } = await query
-
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 })
-    }
-
-    return NextResponse.json(data)
+    return NextResponse.json(rows)
   } catch (error) {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
@@ -49,25 +53,28 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const supabase = createAdminClient()
+    try {
+      const rows = await sql`
+        INSERT INTO avatars (product_id, name, content, is_active)
+        VALUES (
+          ${validated.data.product_id},
+          ${validated.data.name},
+          ${validated.data.content},
+          ${validated.data.is_active ?? true}
+        )
+        RETURNING *
+      `
 
-    const { data, error } = await supabase
-      .from('avatars')
-      .insert(validated.data)
-      .select()
-      .single()
-
-    if (error) {
-      if (error.code === '23503') {
+      return NextResponse.json(rows[0], { status: 201 })
+    } catch (error: any) {
+      if (error?.code === '23503') {
         return NextResponse.json(
           { error: 'Product not found' },
           { status: 404 }
         )
       }
-      return NextResponse.json({ error: error.message }, { status: 500 })
+      return NextResponse.json({ error: error?.message || 'Database error' }, { status: 500 })
     }
-
-    return NextResponse.json(data, { status: 201 })
   } catch (error) {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createAdminClient } from '@/lib/supabase/server'
+import { sql } from '@/lib/db'
 import { createPromptBlockSchema } from '@/lib/validations'
 
 // GET /api/prompt-blocks - List prompt blocks with filtering
@@ -11,37 +11,29 @@ export async function GET(request: NextRequest) {
     const scopeId = searchParams.get('scope_id')
     const activeOnly = searchParams.get('active_only') !== 'false' // Default true
 
-    const supabase = createAdminClient()
-
-    let query = supabase
-      .from('prompt_blocks')
-      .select('*')
-      .order('type', { ascending: true })
-      .order('version', { ascending: false })
+    let rows = await sql`
+      SELECT *
+      FROM prompt_blocks
+      ORDER BY type ASC, version DESC
+    `
 
     if (type) {
-      query = query.eq('type', type)
+      rows = rows.filter((row: any) => row.type === type)
     }
 
     if (scope) {
-      query = query.eq('scope', scope)
+      rows = rows.filter((row: any) => row.scope === scope)
     }
 
     if (scopeId) {
-      query = query.eq('scope_id', scopeId)
+      rows = rows.filter((row: any) => row.scope_id === scopeId)
     }
 
     if (activeOnly) {
-      query = query.eq('is_active', true)
+      rows = rows.filter((row: any) => row.is_active)
     }
 
-    const { data, error } = await query
-
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 })
-    }
-
-    return NextResponse.json(data)
+    return NextResponse.json(rows)
   } catch (error) {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
@@ -63,47 +55,79 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const supabase = createAdminClient()
+    const scopeIdValue = validated.data.scope_id ?? null
 
-    // Check if we need to version (same name + type + scope + scope_id)
-    const { data: existing } = await supabase
-      .from('prompt_blocks')
-      .select('version')
-      .eq('name', validated.data.name)
-      .eq('type', validated.data.type)
-      .eq('scope', validated.data.scope)
-      .eq('scope_id', validated.data.scope_id ?? '')
-      .order('version', { ascending: false })
-      .limit(1)
-      .single()
+    const existingRows = scopeIdValue
+      ? await sql`
+          SELECT version
+          FROM prompt_blocks
+          WHERE name = ${validated.data.name}
+            AND type = ${validated.data.type}
+            AND scope = ${validated.data.scope}
+            AND scope_id = ${scopeIdValue}
+          ORDER BY version DESC
+          LIMIT 1
+        `
+      : await sql`
+          SELECT version
+          FROM prompt_blocks
+          WHERE name = ${validated.data.name}
+            AND type = ${validated.data.type}
+            AND scope = ${validated.data.scope}
+            AND scope_id IS NULL
+          ORDER BY version DESC
+          LIMIT 1
+        `
 
+    const existing = existingRows[0]
     const nextVersion = existing ? existing.version + 1 : 1
 
-    // If creating a new version, deactivate the old one
     if (existing) {
-      await supabase
-        .from('prompt_blocks')
-        .update({ is_active: false })
-        .eq('name', validated.data.name)
-        .eq('type', validated.data.type)
-        .eq('scope', validated.data.scope)
-        .eq('scope_id', validated.data.scope_id ?? '')
+      if (scopeIdValue) {
+        await sql`
+          UPDATE prompt_blocks
+          SET is_active = false
+          WHERE name = ${validated.data.name}
+            AND type = ${validated.data.type}
+            AND scope = ${validated.data.scope}
+            AND scope_id = ${scopeIdValue}
+        `
+      } else {
+        await sql`
+          UPDATE prompt_blocks
+          SET is_active = false
+          WHERE name = ${validated.data.name}
+            AND type = ${validated.data.type}
+            AND scope = ${validated.data.scope}
+            AND scope_id IS NULL
+        `
+      }
     }
 
-    const { data, error } = await supabase
-      .from('prompt_blocks')
-      .insert({
-        ...validated.data,
-        version: nextVersion,
-      })
-      .select()
-      .single()
+    const rows = await sql`
+      INSERT INTO prompt_blocks (
+        name,
+        type,
+        scope,
+        scope_id,
+        content,
+        version,
+        is_active,
+        metadata
+      ) VALUES (
+        ${validated.data.name},
+        ${validated.data.type},
+        ${validated.data.scope},
+        ${scopeIdValue},
+        ${validated.data.content},
+        ${nextVersion},
+        ${validated.data.is_active ?? true},
+        ${validated.data.metadata ?? {}}
+      )
+      RETURNING *
+    `
 
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 })
-    }
-
-    return NextResponse.json(data, { status: 201 })
+    return NextResponse.json(rows[0], { status: 201 })
   } catch (error) {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }

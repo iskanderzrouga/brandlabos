@@ -2,7 +2,6 @@
 
 import { useState, useEffect, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { createClient } from '@/lib/supabase/client'
 
 function LoginForm() {
   const router = useRouter()
@@ -16,37 +15,6 @@ function LoginForm() {
   // Handle auth tokens from URL (hash fragments or query params)
   useEffect(() => {
     const handleAuthFromUrl = async () => {
-      const supabase = createClient()
-
-      // Check if there's a hash fragment with auth data
-      if (typeof window !== 'undefined' && window.location.hash) {
-        const hashParams = new URLSearchParams(window.location.hash.substring(1))
-        const accessToken = hashParams.get('access_token')
-        const refreshToken = hashParams.get('refresh_token')
-        const type = hashParams.get('type')
-
-        if (accessToken && refreshToken) {
-          const { error } = await supabase.auth.setSession({
-            access_token: accessToken,
-            refresh_token: refreshToken,
-          })
-
-          if (!error) {
-            // Clear the hash
-            window.history.replaceState(null, '', window.location.pathname)
-
-            // Redirect based on type
-            if (type === 'invite' || type === 'recovery') {
-              router.push('/reset-password')
-            } else {
-              router.push('/studio')
-            }
-            router.refresh()
-            return
-          }
-        }
-      }
-
       // Check for error in query params
       const urlError = searchParams.get('error')
       if (urlError) {
@@ -54,8 +22,8 @@ function LoginForm() {
       }
 
       // Check if already logged in
-      const { data: { session } } = await supabase.auth.getSession()
-      if (session) {
+      const res = await fetch('/api/auth/me')
+      if (res.ok) {
         router.push('/studio')
         return
       }
@@ -71,18 +39,24 @@ function LoginForm() {
     setLoading(true)
     setError(null)
 
-    const supabase = createClient()
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      })
 
-    const { error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    })
+      if (!res.ok) {
+        const data = await res.json()
+        setError(data.error || 'Login failed')
+        setLoading(false)
+        return
+      }
 
-    if (error) {
-      setError(error.message)
-    } else {
       router.push('/studio')
       router.refresh()
+    } catch {
+      setError('Login failed')
     }
 
     setLoading(false)

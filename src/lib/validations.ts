@@ -170,12 +170,14 @@ export const createAppUserSchema = z.object({
   name: z.string().min(1, 'Name is required').max(100).optional(),
   role: userRoleEnum,
   is_active: z.boolean().optional(),
+  password: z.string().min(8, 'Password must be at least 8 characters').optional(),
 })
 
 export const updateAppUserSchema = z.object({
   name: z.string().min(1).max(100).optional(),
   role: userRoleEnum.optional(),
   is_active: z.boolean().optional(),
+  password: z.string().min(8, 'Password must be at least 8 characters').optional(),
 })
 
 export const userOrganizationAccessSchema = z.object({

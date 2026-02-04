@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { promptAssembler } from '@/lib/services/prompt-assembler'
-import { createAdminClient } from '@/lib/supabase/server'
+import { sql } from '@/lib/db'
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY!,
@@ -101,9 +101,6 @@ export async function POST(request: NextRequest) {
       throw new Error('Failed to parse generation response as JSON')
     }
 
-    // Save to database
-    const supabase = createAdminClient()
-
     // Create generation run
     let run = null
     let saveError = null
@@ -112,32 +109,38 @@ export async function POST(request: NextRequest) {
       const dbFeatureType = contentTypeToDbEnum[body.content_type || 'organic_static'] || 'static_organic_ads'
       console.log('Attempting to save generation run for product:', body.product_id, 'feature_type:', dbFeatureType)
 
-      const { data, error: runError } = await supabase
-        .from('generation_runs')
-        .insert({
-          product_id: body.product_id,
-          feature_type: dbFeatureType,
-          status: 'completed',
-          config: {
+      const rows = await sql`
+        INSERT INTO generation_runs (
+          product_id,
+          feature_type,
+          status,
+          config,
+          assembled_prompt,
+          raw_response,
+          completed_at
+        ) VALUES (
+          ${body.product_id},
+          ${dbFeatureType},
+          'completed',
+          ${{
             avatar_ids: body.avatar_ids,
             pitch_id: body.pitch_id,
             content_type: body.content_type,
             num_concepts: numConcepts,
             user_instructions: body.user_instructions,
-          },
-          assembled_prompt: JSON.stringify(assembled),
-          raw_response: concepts,
-          completed_at: new Date().toISOString(),
-        })
-        .select()
-        .single()
+          }},
+          ${JSON.stringify(assembled)},
+          ${concepts},
+          ${new Date().toISOString()}
+        )
+        RETURNING *
+      `
 
-      if (runError) {
-        console.error('Failed to save generation run:', JSON.stringify(runError, null, 2))
-        saveError = runError.message
+      run = rows[0] ?? null
+      if (!run) {
+        saveError = 'Failed to save generation run'
       } else {
-        console.log('Generation run saved successfully:', data?.id)
-        run = data
+        console.log('Generation run saved successfully:', run?.id)
       }
     } catch (dbError) {
       console.error('Database error saving generation run:', dbError)
@@ -152,7 +155,12 @@ export async function POST(request: NextRequest) {
         content: concept,
       }))
 
-      await supabase.from('assets').insert(assets)
+      for (const asset of assets) {
+        await sql`
+          INSERT INTO assets (generation_run_id, type, content)
+          VALUES (${asset.generation_run_id}, ${asset.type}, ${asset.content})
+        `
+      }
     }
 
     return NextResponse.json({

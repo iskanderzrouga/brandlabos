@@ -80,26 +80,6 @@ export default function UsersAdminPage() {
     }
   }
 
-  async function createUser(data: { email: string; name: string; role: UserRole }) {
-    try {
-      const res = await fetch('/api/users', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
-      })
-
-      if (!res.ok) {
-        const err = await res.json()
-        throw new Error(err.error || 'Failed to create user')
-      }
-
-      setShowCreateModal(false)
-      fetchData()
-    } catch (err) {
-      alert(err instanceof Error ? err.message : 'Failed to create user')
-    }
-  }
-
   async function updateUserRole(userId: string, role: UserRole) {
     try {
       const res = await fetch(`/api/users/${userId}`, {
@@ -179,6 +159,28 @@ export default function UsersAdminPage() {
       fetchData()
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Failed to delete user')
+    }
+  }
+
+  async function resetUserPassword(userId: string, email: string) {
+    const newPassword = prompt(`Set a new password for ${email}`)
+    if (!newPassword) return
+
+    try {
+      const res = await fetch(`/api/users/${userId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: newPassword }),
+      })
+
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.error || 'Failed to reset password')
+      }
+
+      alert('Password updated')
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to reset password')
     }
   }
 
@@ -305,6 +307,12 @@ export default function UsersAdminPage() {
                         </button>
                       )}
                       <button
+                        onClick={() => resetUserPassword(user.id, user.email)}
+                        className="text-sm text-zinc-400 hover:text-zinc-200"
+                      >
+                        Reset Password
+                      </button>
+                      <button
                         onClick={() => deleteUser(user.id, user.email)}
                         className="text-sm text-red-400 hover:text-red-300"
                       >
@@ -361,6 +369,7 @@ function CreateUserModal({
   const [email, setEmail] = useState('')
   const [name, setName] = useState('')
   const [role, setRole] = useState<UserRole>('brand_user')
+  const [password, setPassword] = useState('')
   const [selectedOrg, setSelectedOrg] = useState('')
   const [selectedBrand, setSelectedBrand] = useState('')
   const [creating, setCreating] = useState(false)
@@ -384,21 +393,24 @@ function CreateUserModal({
       const res = await fetch('/api/users', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, name, role }),
+        body: JSON.stringify({ email, name, role, password: password || undefined }),
       })
 
-      if (!res.ok) {
-        const err = await res.json()
-        throw new Error(err.error || 'Failed to create user')
-      }
-
       const newUser = await res.json()
+
+      if (!res.ok) {
+        throw new Error(newUser.error || 'Failed to create user')
+      }
 
       // Add access based on role
       if (role === 'org_admin' && selectedOrg) {
         await onAddAccess(newUser.id, 'organization', selectedOrg)
       } else if (role === 'brand_user' && selectedBrand) {
         await onAddAccess(newUser.id, 'brand', selectedBrand)
+      }
+
+      if (newUser.temp_password) {
+        alert(`Temporary password for ${newUser.email}: ${newUser.temp_password}`)
       }
 
       onClose()
@@ -450,6 +462,16 @@ function CreateUserModal({
               <option value="org_admin">Org Admin</option>
               <option value="super_admin">Super Admin</option>
             </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-zinc-400 mb-1">Password (optional)</label>
+            <input
+              type="text"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg focus:ring-2 focus:ring-zinc-600"
+              placeholder="Leave blank to auto-generate"
+            />
           </div>
 
           {/* Organization selector for org_admin */}

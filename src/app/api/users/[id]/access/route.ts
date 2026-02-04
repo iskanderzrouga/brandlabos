@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createAdminClient } from '@/lib/supabase/server'
+import { sql } from '@/lib/db'
 
 type Params = { params: Promise<{ id: string }> }
 
@@ -10,46 +10,44 @@ export async function POST(request: NextRequest, { params }: Params) {
     const body = await request.json()
     const { type, organization_id, brand_id } = body
 
-    const supabase = createAdminClient()
-
     if (type === 'organization' && organization_id) {
-      const { data, error } = await supabase
-        .from('user_organization_access')
-        .insert({ user_id: userId, organization_id })
-        .select()
-        .single()
+      try {
+        const rows = await sql`
+          INSERT INTO user_organization_access (user_id, organization_id)
+          VALUES (${userId}, ${organization_id})
+          RETURNING *
+        `
 
-      if (error) {
-        if (error.code === '23505') {
+        return NextResponse.json(rows[0], { status: 201 })
+      } catch (error: any) {
+        if (error?.code === '23505') {
           return NextResponse.json(
             { error: 'User already has access to this organization' },
             { status: 409 }
           )
         }
-        return NextResponse.json({ error: error.message }, { status: 500 })
+        return NextResponse.json({ error: error?.message || 'Database error' }, { status: 500 })
       }
-
-      return NextResponse.json(data, { status: 201 })
     }
 
     if (type === 'brand' && brand_id) {
-      const { data, error } = await supabase
-        .from('user_brand_access')
-        .insert({ user_id: userId, brand_id })
-        .select()
-        .single()
+      try {
+        const rows = await sql`
+          INSERT INTO user_brand_access (user_id, brand_id)
+          VALUES (${userId}, ${brand_id})
+          RETURNING *
+        `
 
-      if (error) {
-        if (error.code === '23505') {
+        return NextResponse.json(rows[0], { status: 201 })
+      } catch (error: any) {
+        if (error?.code === '23505') {
           return NextResponse.json(
             { error: 'User already has access to this brand' },
             { status: 409 }
           )
         }
-        return NextResponse.json({ error: error.message }, { status: 500 })
+        return NextResponse.json({ error: error?.message || 'Database error' }, { status: 500 })
       }
-
-      return NextResponse.json(data, { status: 201 })
     }
 
     return NextResponse.json(
@@ -76,28 +74,18 @@ export async function DELETE(request: NextRequest, { params }: Params) {
       )
     }
 
-    const supabase = createAdminClient()
-
     if (type === 'organization') {
-      const { error } = await supabase
-        .from('user_organization_access')
-        .delete()
-        .eq('id', accessId)
-        .eq('user_id', userId)
-
-      if (error) {
-        return NextResponse.json({ error: error.message }, { status: 500 })
-      }
+      await sql`
+        DELETE FROM user_organization_access
+        WHERE id = ${accessId}
+          AND user_id = ${userId}
+      `
     } else if (type === 'brand') {
-      const { error } = await supabase
-        .from('user_brand_access')
-        .delete()
-        .eq('id', accessId)
-        .eq('user_id', userId)
-
-      if (error) {
-        return NextResponse.json({ error: error.message }, { status: 500 })
-      }
+      await sql`
+        DELETE FROM user_brand_access
+        WHERE id = ${accessId}
+          AND user_id = ${userId}
+      `
     } else {
       return NextResponse.json({ error: 'Invalid access type' }, { status: 400 })
     }

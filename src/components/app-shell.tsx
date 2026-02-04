@@ -3,8 +3,6 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
-import { createClient } from '@/lib/supabase/client'
-import type { User } from '@supabase/supabase-js'
 
 // ============================================================================
 // CONTEXT - Global state for selected org/brand/product
@@ -21,13 +19,14 @@ interface AppContextType {
   setSelectedBrand: (id: string | null) => void
   setSelectedProduct: (id: string | null) => void
   loading: boolean
-  user: User | null
+  user: AuthUser | null
   signOut: () => Promise<void>
 }
 
 interface Org { id: string; name: string; slug: string }
 interface Brand { id: string; organization_id: string; name: string; slug: string }
 interface Product { id: string; brand_id: string; name: string; slug: string }
+interface AuthUser { id: string; email: string; name?: string | null; role?: string }
 
 const AppContext = createContext<AppContextType | null>(null)
 
@@ -51,26 +50,32 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [selectedBrand, setSelectedBrand] = useState<string | null>(null)
   const [selectedProduct, setSelectedProduct] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
-  const [user, setUser] = useState<User | null>(null)
+  const [user, setUser] = useState<AuthUser | null>(null)
 
   // Fetch user on mount
   useEffect(() => {
-    const supabase = createClient()
-    supabase.auth.getUser().then(({ data: { user } }) => {
-      setUser(user)
-    })
-
-    // Listen for auth changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null)
-    })
-
-    return () => subscription.unsubscribe()
+    let active = true
+    const loadUser = async () => {
+      try {
+        const res = await fetch('/api/auth/me')
+        if (!res.ok) {
+          if (active) setUser(null)
+          return
+        }
+        const data = await res.json()
+        if (active) setUser(data)
+      } catch {
+        if (active) setUser(null)
+      }
+    }
+    loadUser()
+    return () => {
+      active = false
+    }
   }, [])
 
   const signOut = async () => {
-    const supabase = createClient()
-    await supabase.auth.signOut()
+    await fetch('/api/auth/logout', { method: 'POST' })
     router.push('/login')
     router.refresh()
   }

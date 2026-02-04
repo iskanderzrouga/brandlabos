@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createAdminClient } from '@/lib/supabase/server'
+import { sql } from '@/lib/db'
 
 type Params = { params: Promise<{ id: string }> }
 
@@ -7,22 +7,27 @@ type Params = { params: Promise<{ id: string }> }
 export async function GET(request: NextRequest, { params }: Params) {
   try {
     const { id } = await params
-    const supabase = createAdminClient()
+    const rows = await sql`
+      SELECT
+        generation_runs.*,
+        jsonb_build_object('name', products.name, 'slug', products.slug, 'brand_id', products.brand_id) AS products,
+        COALESCE(
+          jsonb_agg(assets ORDER BY assets.created_at ASC) FILTER (WHERE assets.id IS NOT NULL),
+          '[]'
+        ) AS assets
+      FROM generation_runs
+      LEFT JOIN products ON products.id = generation_runs.product_id
+      LEFT JOIN assets ON assets.generation_run_id = generation_runs.id
+      WHERE generation_runs.id = ${id}
+      GROUP BY generation_runs.id, products.name, products.slug, products.brand_id
+    `
 
-    const { data, error } = await supabase
-      .from('generation_runs')
-      .select('*, products(name, slug, brand_id), assets(*)')
-      .eq('id', id)
-      .single()
+    const data = rows[0]
 
-    if (error) {
-      if (error.code === 'PGRST116') {
-        return NextResponse.json({ error: 'Generation run not found' }, { status: 404 })
-      }
-      return NextResponse.json({ error: error.message }, { status: 500 })
+    if (!data) {
+      return NextResponse.json({ error: 'Generation run not found' }, { status: 404 })
     }
 
-    // Parse the assembled prompt if it exists
     if (data.assembled_prompt) {
       try {
         data.assembled_prompt_parsed = JSON.parse(data.assembled_prompt)
@@ -62,23 +67,27 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       updateData.completed_at = new Date().toISOString()
     }
 
-    const supabase = createAdminClient()
+    const status = updateData.status ?? null
+    const rawResponse = updateData.raw_response ?? null
+    const errorMessage = updateData.error_message ?? null
+    const completedAt = updateData.completed_at ?? null
 
-    const { data, error } = await supabase
-      .from('generation_runs')
-      .update(updateData)
-      .eq('id', id)
-      .select()
-      .single()
+    const rows = await sql`
+      UPDATE generation_runs
+      SET
+        status = COALESCE(${status}, status),
+        raw_response = COALESCE(${rawResponse}, raw_response),
+        error_message = COALESCE(${errorMessage}, error_message),
+        completed_at = COALESCE(${completedAt}, completed_at)
+      WHERE id = ${id}
+      RETURNING *
+    `
 
-    if (error) {
-      if (error.code === 'PGRST116') {
-        return NextResponse.json({ error: 'Generation run not found' }, { status: 404 })
-      }
-      return NextResponse.json({ error: error.message }, { status: 500 })
+    if (!rows[0]) {
+      return NextResponse.json({ error: 'Generation run not found' }, { status: 404 })
     }
 
-    return NextResponse.json(data)
+    return NextResponse.json(rows[0])
   } catch (error) {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
@@ -88,15 +97,14 @@ export async function PATCH(request: NextRequest, { params }: Params) {
 export async function DELETE(request: NextRequest, { params }: Params) {
   try {
     const { id } = await params
-    const supabase = createAdminClient()
+    const rows = await sql`
+      DELETE FROM generation_runs
+      WHERE id = ${id}
+      RETURNING id
+    `
 
-    const { error } = await supabase
-      .from('generation_runs')
-      .delete()
-      .eq('id', id)
-
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 })
+    if (!rows[0]) {
+      return NextResponse.json({ error: 'Generation run not found' }, { status: 404 })
     }
 
     return NextResponse.json({ success: true })

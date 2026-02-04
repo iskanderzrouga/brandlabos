@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
-import { createAdminClient } from '@/lib/supabase/server'
+import { sql } from '@/lib/db'
 
 const anthropic = new Anthropic()
 
@@ -18,13 +18,13 @@ export async function POST(request: NextRequest) {
     }
 
     // Get existing avatar names to avoid duplicates
-    const supabase = createAdminClient()
-    const { data: existingAvatars } = await supabase
-      .from('avatars')
-      .select('name')
-      .eq('product_id', product_id)
+    const existingAvatars = await sql`
+      SELECT name
+      FROM avatars
+      WHERE product_id = ${product_id}
+    `
 
-    const existingNames = existingAvatars?.map(a => a.name.toLowerCase()) || []
+    const existingNames = existingAvatars?.map((a) => a.name.toLowerCase()) || []
 
     const systemPrompt = `You are a naming expert. Generate a short, descriptive avatar name (3-8 words, lowercase, hyphenated) based on the avatar profile provided.
 

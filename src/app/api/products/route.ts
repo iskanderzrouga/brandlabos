@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createAdminClient } from '@/lib/supabase/server'
+import { sql } from '@/lib/db'
 import { createProductSchema } from '@/lib/validations'
 
 // GET /api/products - List all products (optionally filtered by brand)
@@ -8,28 +8,37 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url)
     const brandId = searchParams.get('brand_id')
 
-    const supabase = createAdminClient()
+    const rows = brandId
+      ? await sql`
+          SELECT
+            products.*,
+            jsonb_build_object(
+              'name', brands.name,
+              'slug', brands.slug,
+              'organization_id', brands.organization_id
+            ) AS brands
+          FROM products
+          JOIN brands ON brands.id = products.brand_id
+          WHERE products.brand_id = ${brandId}
+          ORDER BY products.created_at DESC
+        `
+      : await sql`
+          SELECT
+            products.*,
+            jsonb_build_object(
+              'name', brands.name,
+              'slug', brands.slug,
+              'organization_id', brands.organization_id
+            ) AS brands
+          FROM products
+          JOIN brands ON brands.id = products.brand_id
+          ORDER BY products.created_at DESC
+        `
 
-    let query = supabase
-      .from('products')
-      .select('*, brands(name, slug, organization_id)')
-      .order('created_at', { ascending: false })
-
-    if (brandId) {
-      query = query.eq('brand_id', brandId)
-    }
-
-    const { data, error } = await query
-
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 })
-    }
-
-    // Map context to content for UI
-    const mappedData = data?.map((product: Record<string, unknown>) => ({
+    const mappedData = rows.map((product: Record<string, unknown>) => ({
       ...product,
       content: (product.context as Record<string, unknown>)?.content || '',
-    })) || []
+    }))
 
     return NextResponse.json(mappedData)
   } catch (error) {
@@ -51,45 +60,45 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const supabase = createAdminClient()
-
     // Map 'content' to 'context' for database (products table uses context JSONB)
     const { content, ...rest } = validated.data
-    const insertData = {
-      ...rest,
-      context: { content }, // Store content inside the context JSONB field
-    }
+    const insertContext = { content }
 
-    const { data, error } = await supabase
-      .from('products')
-      .insert(insertData)
-      .select()
-      .single()
+    try {
+      const rows = await sql`
+        INSERT INTO products (brand_id, name, slug, context)
+        VALUES (
+          ${rest.brand_id},
+          ${rest.name},
+          ${rest.slug},
+          ${insertContext}
+        )
+        RETURNING *
+      `
 
-    if (error) {
+      const data = rows[0]
+      const responseData = {
+        ...data,
+        content: data.context?.content || '',
+      }
+
+      return NextResponse.json(responseData, { status: 201 })
+    } catch (error: any) {
       console.error('Product creation error:', error)
-      if (error.code === '23505') {
+      if (error?.code === '23505') {
         return NextResponse.json(
           { error: 'Product with this slug already exists for this brand' },
           { status: 409 }
         )
       }
-      if (error.code === '23503') {
+      if (error?.code === '23503') {
         return NextResponse.json(
           { error: 'Brand not found' },
           { status: 404 }
         )
       }
-      return NextResponse.json({ error: error.message }, { status: 500 })
+      return NextResponse.json({ error: error?.message || 'Database error' }, { status: 500 })
     }
-
-    // Map context back to content for UI
-    const responseData = {
-      ...data,
-      content: data.context?.content || '',
-    }
-
-    return NextResponse.json(responseData, { status: 201 })
   } catch (error) {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }

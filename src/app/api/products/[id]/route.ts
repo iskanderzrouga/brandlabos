@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createAdminClient } from '@/lib/supabase/server'
+import { sql } from '@/lib/db'
 import { updateProductSchema } from '@/lib/validations'
 
 type Params = { params: Promise<{ id: string }> }
@@ -8,22 +8,40 @@ type Params = { params: Promise<{ id: string }> }
 export async function GET(request: NextRequest, { params }: Params) {
   try {
     const { id } = await params
-    const supabase = createAdminClient()
+    const rows = await sql`
+      SELECT
+        products.*,
+        jsonb_build_object(
+          'name', brands.name,
+          'slug', brands.slug,
+          'organization_id', brands.organization_id,
+          'organizations', jsonb_build_object('name', organizations.name, 'slug', organizations.slug)
+        ) AS brands,
+        COALESCE(
+          jsonb_agg(
+            jsonb_build_object(
+              'id', avatars.id,
+              'name', avatars.name,
+              'content', avatars.content,
+              'is_active', avatars.is_active
+            )
+            ORDER BY avatars.created_at DESC
+          ) FILTER (WHERE avatars.id IS NOT NULL),
+          '[]'
+        ) AS avatars
+      FROM products
+      JOIN brands ON brands.id = products.brand_id
+      JOIN organizations ON organizations.id = brands.organization_id
+      LEFT JOIN avatars ON avatars.product_id = products.id
+      WHERE products.id = ${id}
+      GROUP BY products.id, brands.name, brands.slug, brands.organization_id, organizations.name, organizations.slug
+    `
 
-    const { data, error } = await supabase
-      .from('products')
-      .select('*, brands(name, slug, organization_id, organizations(name, slug)), avatars(id, name, content, is_active)')
-      .eq('id', id)
-      .single()
-
-    if (error) {
-      if (error.code === 'PGRST116') {
-        return NextResponse.json({ error: 'Product not found' }, { status: 404 })
-      }
-      return NextResponse.json({ error: error.message }, { status: 500 })
+    if (!rows[0]) {
+      return NextResponse.json({ error: 'Product not found' }, { status: 404 })
     }
 
-    // Map context to content for UI
+    const data = rows[0]
     const responseData = {
       ...data,
       content: data.context?.content || '',
@@ -49,33 +67,29 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       )
     }
 
-    const supabase = createAdminClient()
-
-    // Map content to context for database
     const { content, ...rest } = validated.data
-    const updateData: Record<string, unknown> = { ...rest }
-    if (content !== undefined) {
-      updateData.context = { content }
+    const name = rest.name ?? null
+    const slug = rest.slug ?? null
+    const context = content !== undefined ? { content } : null
+
+    const rows = await sql`
+      UPDATE products
+      SET
+        name = COALESCE(${name}, name),
+        slug = COALESCE(${slug}, slug),
+        context = COALESCE(${context}, context),
+        updated_at = NOW()
+      WHERE id = ${id}
+      RETURNING *
+    `
+
+    if (!rows[0]) {
+      return NextResponse.json({ error: 'Product not found' }, { status: 404 })
     }
 
-    const { data, error } = await supabase
-      .from('products')
-      .update(updateData)
-      .eq('id', id)
-      .select()
-      .single()
-
-    if (error) {
-      if (error.code === 'PGRST116') {
-        return NextResponse.json({ error: 'Product not found' }, { status: 404 })
-      }
-      return NextResponse.json({ error: error.message }, { status: 500 })
-    }
-
-    // Map context back to content for UI
     const responseData = {
-      ...data,
-      content: data.context?.content || '',
+      ...rows[0],
+      content: rows[0].context?.content || '',
     }
 
     return NextResponse.json(responseData)
@@ -88,15 +102,14 @@ export async function PATCH(request: NextRequest, { params }: Params) {
 export async function DELETE(request: NextRequest, { params }: Params) {
   try {
     const { id } = await params
-    const supabase = createAdminClient()
+    const rows = await sql`
+      DELETE FROM products
+      WHERE id = ${id}
+      RETURNING id
+    `
 
-    const { error } = await supabase
-      .from('products')
-      .delete()
-      .eq('id', id)
-
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 })
+    if (!rows[0]) {
+      return NextResponse.json({ error: 'Product not found' }, { status: 404 })
     }
 
     return NextResponse.json({ success: true })

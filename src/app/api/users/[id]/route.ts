@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createAdminClient } from '@/lib/supabase/server'
+import { sql } from '@/lib/db'
 import { updateAppUserSchema } from '@/lib/validations'
+import { hashPassword } from '@/lib/passwords'
 
 type Params = { params: Promise<{ id: string }> }
 
@@ -8,32 +9,51 @@ type Params = { params: Promise<{ id: string }> }
 export async function GET(request: NextRequest, { params }: Params) {
   try {
     const { id } = await params
-    const supabase = createAdminClient()
+    const users = await sql`
+      SELECT id, email, name, role, is_active, created_at, updated_at
+      FROM app_users
+      WHERE id = ${id}
+      LIMIT 1
+    `
 
-    const { data, error } = await supabase
-      .from('app_users')
-      .select(`
-        *,
-        user_organization_access (
-          organization_id,
-          organizations (id, name)
-        ),
-        user_brand_access (
-          brand_id,
-          brands (id, name)
-        )
-      `)
-      .eq('id', id)
-      .single()
-
-    if (error) {
-      if (error.code === 'PGRST116') {
-        return NextResponse.json({ error: 'User not found' }, { status: 404 })
-      }
-      return NextResponse.json({ error: error.message }, { status: 500 })
+    const user = users[0]
+    if (!user) {
+      return NextResponse.json({ error: 'User not found' }, { status: 404 })
     }
 
-    return NextResponse.json(data)
+    const orgAccess = await sql`
+      SELECT
+        user_organization_access.organization_id,
+        organizations.id AS org_id,
+        organizations.name AS org_name
+      FROM user_organization_access
+      JOIN organizations ON organizations.id = user_organization_access.organization_id
+      WHERE user_organization_access.user_id = ${id}
+    `
+
+    const brandAccess = await sql`
+      SELECT
+        user_brand_access.brand_id,
+        brands.id AS brand_id,
+        brands.name AS brand_name
+      FROM user_brand_access
+      JOIN brands ON brands.id = user_brand_access.brand_id
+      WHERE user_brand_access.user_id = ${id}
+    `
+
+    const response = {
+      ...user,
+      user_organization_access: orgAccess.map((row) => ({
+        organization_id: row.organization_id,
+        organizations: { id: row.org_id, name: row.org_name },
+      })),
+      user_brand_access: brandAccess.map((row) => ({
+        brand_id: row.brand_id,
+        brands: { id: row.brand_id, name: row.brand_name },
+      })),
+    }
+
+    return NextResponse.json(response)
   } catch (error) {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
@@ -54,23 +74,31 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       )
     }
 
-    const supabase = createAdminClient()
+    const name = validated.data.name ?? null
+    const role = validated.data.role ?? null
+    const isActive = validated.data.is_active ?? null
+    const password = validated.data.password ?? null
+    const passwordHash = password ? await hashPassword(password) : null
+    const passwordResetAt = password ? new Date().toISOString() : null
 
-    const { data, error } = await supabase
-      .from('app_users')
-      .update(validated.data)
-      .eq('id', id)
-      .select()
-      .single()
+    const rows = await sql`
+      UPDATE app_users
+      SET
+        name = COALESCE(${name}, name),
+        role = COALESCE(${role}, role),
+        is_active = COALESCE(${isActive}, is_active),
+        password_hash = COALESCE(${passwordHash}, password_hash),
+        last_password_reset_at = COALESCE(${passwordResetAt}, last_password_reset_at),
+        updated_at = NOW()
+      WHERE id = ${id}
+      RETURNING id, email, name, role, is_active, created_at, updated_at
+    `
 
-    if (error) {
-      if (error.code === 'PGRST116') {
-        return NextResponse.json({ error: 'User not found' }, { status: 404 })
-      }
-      return NextResponse.json({ error: error.message }, { status: 500 })
+    if (!rows[0]) {
+      return NextResponse.json({ error: 'User not found' }, { status: 404 })
     }
 
-    return NextResponse.json(data)
+    return NextResponse.json(rows[0])
   } catch (error) {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
@@ -80,39 +108,14 @@ export async function PATCH(request: NextRequest, { params }: Params) {
 export async function DELETE(request: NextRequest, { params }: Params) {
   try {
     const { id } = await params
-    const supabase = createAdminClient()
+    const rows = await sql`
+      DELETE FROM app_users
+      WHERE id = ${id}
+      RETURNING id
+    `
 
-    // First get the user to find their auth_user_id
-    const { data: appUser, error: fetchError } = await supabase
-      .from('app_users')
-      .select('auth_user_id')
-      .eq('id', id)
-      .single()
-
-    if (fetchError) {
-      if (fetchError.code === 'PGRST116') {
-        return NextResponse.json({ error: 'User not found' }, { status: 404 })
-      }
-      return NextResponse.json({ error: fetchError.message }, { status: 500 })
-    }
-
-    // Delete from app_users table
-    const { error: deleteError } = await supabase
-      .from('app_users')
-      .delete()
-      .eq('id', id)
-
-    if (deleteError) {
-      return NextResponse.json({ error: deleteError.message }, { status: 500 })
-    }
-
-    // Delete from Supabase Auth (if not placeholder)
-    if (appUser.auth_user_id && appUser.auth_user_id !== '00000000-0000-0000-0000-000000000000') {
-      const { error: authDeleteError } = await supabase.auth.admin.deleteUser(appUser.auth_user_id)
-      if (authDeleteError) {
-        console.error('Failed to delete from Supabase Auth:', authDeleteError)
-        // Don't fail - app_users record is already deleted
-      }
+    if (!rows[0]) {
+      return NextResponse.json({ error: 'User not found' }, { status: 404 })
     }
 
     return NextResponse.json({ success: true })

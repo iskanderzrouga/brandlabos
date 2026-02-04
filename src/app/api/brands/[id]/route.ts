@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createAdminClient } from '@/lib/supabase/server'
+import { sql } from '@/lib/db'
 import { updateBrandSchema } from '@/lib/validations'
 
 type Params = { params: Promise<{ id: string }> }
@@ -8,22 +8,29 @@ type Params = { params: Promise<{ id: string }> }
 export async function GET(request: NextRequest, { params }: Params) {
   try {
     const { id } = await params
-    const supabase = createAdminClient()
+    const rows = await sql`
+      SELECT
+        brands.*,
+        jsonb_build_object('name', organizations.name, 'slug', organizations.slug) AS organizations,
+        COALESCE(
+          jsonb_agg(
+            jsonb_build_object('id', products.id, 'name', products.name, 'slug', products.slug)
+            ORDER BY products.created_at DESC
+          ) FILTER (WHERE products.id IS NOT NULL),
+          '[]'
+        ) AS products
+      FROM brands
+      JOIN organizations ON organizations.id = brands.organization_id
+      LEFT JOIN products ON products.brand_id = brands.id
+      WHERE brands.id = ${id}
+      GROUP BY brands.id, organizations.name, organizations.slug
+    `
 
-    const { data, error } = await supabase
-      .from('brands')
-      .select('*, organizations(name, slug), products(id, name, slug)')
-      .eq('id', id)
-      .single()
-
-    if (error) {
-      if (error.code === 'PGRST116') {
-        return NextResponse.json({ error: 'Brand not found' }, { status: 404 })
-      }
-      return NextResponse.json({ error: error.message }, { status: 500 })
+    if (!rows[0]) {
+      return NextResponse.json({ error: 'Brand not found' }, { status: 404 })
     }
 
-    return NextResponse.json(data)
+    return NextResponse.json(rows[0])
   } catch (error) {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
@@ -43,23 +50,30 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       )
     }
 
-    const supabase = createAdminClient()
+    const name = validated.data.name ?? null
+    const slug = validated.data.slug ?? null
+    const voiceGuidelines = validated.data.voice_guidelines ?? null
+    const logoUrl = validated.data.logo_url ?? null
+    const metadata = validated.data.metadata ?? null
 
-    const { data, error } = await supabase
-      .from('brands')
-      .update(validated.data)
-      .eq('id', id)
-      .select()
-      .single()
+    const rows = await sql`
+      UPDATE brands
+      SET
+        name = COALESCE(${name}, name),
+        slug = COALESCE(${slug}, slug),
+        voice_guidelines = COALESCE(${voiceGuidelines}, voice_guidelines),
+        logo_url = COALESCE(${logoUrl}, logo_url),
+        metadata = COALESCE(${metadata}, metadata),
+        updated_at = NOW()
+      WHERE id = ${id}
+      RETURNING *
+    `
 
-    if (error) {
-      if (error.code === 'PGRST116') {
-        return NextResponse.json({ error: 'Brand not found' }, { status: 404 })
-      }
-      return NextResponse.json({ error: error.message }, { status: 500 })
+    if (!rows[0]) {
+      return NextResponse.json({ error: 'Brand not found' }, { status: 404 })
     }
 
-    return NextResponse.json(data)
+    return NextResponse.json(rows[0])
   } catch (error) {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
@@ -69,15 +83,14 @@ export async function PATCH(request: NextRequest, { params }: Params) {
 export async function DELETE(request: NextRequest, { params }: Params) {
   try {
     const { id } = await params
-    const supabase = createAdminClient()
+    const rows = await sql`
+      DELETE FROM brands
+      WHERE id = ${id}
+      RETURNING id
+    `
 
-    const { error } = await supabase
-      .from('brands')
-      .delete()
-      .eq('id', id)
-
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 })
+    if (!rows[0]) {
+      return NextResponse.json({ error: 'Brand not found' }, { status: 404 })
     }
 
     return NextResponse.json({ success: true })

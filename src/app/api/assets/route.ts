@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createAdminClient } from '@/lib/supabase/server'
+import { sql } from '@/lib/db'
 import { createAssetSchema } from '@/lib/validations'
 
 // GET /api/assets - List assets (filtered by generation run)
@@ -16,25 +16,18 @@ export async function GET(request: NextRequest) {
       )
     }
 
-    const supabase = createAdminClient()
-
-    let query = supabase
-      .from('assets')
-      .select('*')
-      .eq('generation_run_id', generationRunId)
-      .order('created_at', { ascending: true })
+    let rows = await sql`
+      SELECT *
+      FROM assets
+      WHERE generation_run_id = ${generationRunId}
+      ORDER BY created_at ASC
+    `
 
     if (type) {
-      query = query.eq('type', type)
+      rows = rows.filter((row: any) => row.type === type)
     }
 
-    const { data, error } = await query
-
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 })
-    }
-
-    return NextResponse.json(data)
+    return NextResponse.json(rows)
   } catch (error) {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
@@ -53,25 +46,27 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const supabase = createAdminClient()
-
-    const { data, error } = await supabase
-      .from('assets')
-      .insert(validated.data)
-      .select()
-      .single()
-
-    if (error) {
-      if (error.code === '23503') {
+    try {
+      const rows = await sql`
+        INSERT INTO assets (generation_run_id, type, content, metadata)
+        VALUES (
+          ${validated.data.generation_run_id},
+          ${validated.data.type},
+          ${validated.data.content},
+          ${validated.data.metadata ?? {}}
+        )
+        RETURNING *
+      `
+      return NextResponse.json(rows[0], { status: 201 })
+    } catch (error: any) {
+      if (error?.code === '23503') {
         return NextResponse.json(
           { error: 'Generation run not found' },
           { status: 404 }
         )
       }
-      return NextResponse.json({ error: error.message }, { status: 500 })
+      return NextResponse.json({ error: error?.message || 'Database error' }, { status: 500 })
     }
-
-    return NextResponse.json(data, { status: 201 })
   } catch (error) {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
@@ -101,18 +96,22 @@ export async function PUT(request: NextRequest) {
       validatedAssets.push(validated.data)
     }
 
-    const supabase = createAdminClient()
-
-    const { data, error } = await supabase
-      .from('assets')
-      .insert(validatedAssets)
-      .select()
-
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 })
+    const inserted = []
+    for (const asset of validatedAssets) {
+      const rows = await sql`
+        INSERT INTO assets (generation_run_id, type, content, metadata)
+        VALUES (
+          ${asset.generation_run_id},
+          ${asset.type},
+          ${asset.content},
+          ${asset.metadata ?? {}}
+        )
+        RETURNING *
+      `
+      if (rows[0]) inserted.push(rows[0])
     }
 
-    return NextResponse.json(data, { status: 201 })
+    return NextResponse.json(inserted, { status: 201 })
   } catch (error) {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }

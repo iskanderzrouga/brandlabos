@@ -1,4 +1,4 @@
-import { createAdminClient } from '@/lib/supabase/server'
+import { sql } from '@/lib/db'
 import { DEFAULT_PROMPT_BLOCKS } from '@/lib/prompt-defaults'
 
 // Re-export for backwards compatibility
@@ -66,14 +66,13 @@ export class PromptAssembler {
   private promptBlocks: Map<string, PromptBlock> = new Map()
 
   async assemble(context: AssemblyContext): Promise<AssembledPrompt> {
-    const supabase = createAdminClient()
-
     // Fetch all active prompt blocks
-    const { data: blocks } = await supabase
-      .from('prompt_blocks')
-      .select('*')
-      .eq('is_active', true)
-      .eq('scope', 'global')
+    const blocks = await sql`
+      SELECT *
+      FROM prompt_blocks
+      WHERE is_active = true
+        AND scope = 'global'
+    ` as PromptBlock[]
 
     // Store blocks by metadata.key for easy lookup
     this.promptBlocks.clear()
@@ -86,11 +85,17 @@ export class PromptAssembler {
     }
 
     // Fetch product with brand
-    const { data: productData } = await supabase
-      .from('products')
-      .select('*, brands(name, voice_guidelines)')
-      .eq('id', context.productId)
-      .single()
+    const productRows = await sql`
+      SELECT
+        products.*,
+        brands.name AS brand_name,
+        brands.voice_guidelines AS brand_voice_guidelines
+      FROM products
+      LEFT JOIN brands ON brands.id = products.brand_id
+      WHERE products.id = ${context.productId}
+      LIMIT 1
+    `
+    const productData = productRows[0]
 
     if (!productData) {
       throw new Error(`Product ${context.productId} not found`)
@@ -100,13 +105,21 @@ export class PromptAssembler {
     const product = {
       ...productData,
       content: productData.context?.content || '',
+      brands: productData.brand_name
+        ? {
+            name: productData.brand_name,
+            voice_guidelines: productData.brand_voice_guidelines,
+          }
+        : undefined,
     }
 
     // Fetch avatars
-    const { data: avatars } = await supabase
-      .from('avatars')
-      .select('*')
-      .in('id', context.avatarIds)
+    const avatarRows = await Promise.all(
+      context.avatarIds.map((id) =>
+        sql`SELECT id, name, content FROM avatars WHERE id = ${id} LIMIT 1`
+      )
+    )
+    const avatars = avatarRows.flat().filter(Boolean)
 
     if (!avatars || avatars.length === 0) {
       throw new Error('No avatars found')
@@ -115,12 +128,14 @@ export class PromptAssembler {
     // Fetch pitch if provided
     let pitch: Pitch | null = null
     if (context.pitchId) {
-      const { data: pitchData } = await supabase
-        .from('pitches')
-        .select('*')
-        .eq('id', context.pitchId)
-        .single()
-      pitch = pitchData
+      const pitchRows = await sql`
+        SELECT id, name, content
+        FROM pitches
+        WHERE id = ${context.pitchId}
+        LIMIT 1
+      `
+      const pitchRow = pitchRows[0] as Pitch | undefined
+      pitch = pitchRow ?? null
     }
 
     // Determine zoom behavior

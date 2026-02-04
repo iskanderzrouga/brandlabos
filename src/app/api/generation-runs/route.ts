@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createAdminClient } from '@/lib/supabase/server'
+import { sql } from '@/lib/db'
 import { createGenerationRunSchema } from '@/lib/validations'
 import { promptAssembler } from '@/lib/services/prompt-assembler'
 
@@ -14,41 +14,83 @@ export async function GET(request: NextRequest) {
     console.log('=== Generation Runs API ===')
     console.log('Query params:', { productId, featureType, status })
 
-    const supabase = createAdminClient()
-
-    // Simple query without join to avoid potential issues
-    let query = supabase
-      .from('generation_runs')
-      .select('*')
-      .order('created_at', { ascending: false })
-      .limit(50)
-
-    if (productId) {
-      query = query.eq('product_id', productId)
+    let rows
+    if (productId && featureType && status) {
+      rows = await sql`
+        SELECT *
+        FROM generation_runs
+        WHERE product_id = ${productId}
+          AND feature_type = ${featureType}
+          AND status = ${status}
+        ORDER BY created_at DESC
+        LIMIT 50
+      `
+    } else if (productId && featureType) {
+      rows = await sql`
+        SELECT *
+        FROM generation_runs
+        WHERE product_id = ${productId}
+          AND feature_type = ${featureType}
+        ORDER BY created_at DESC
+        LIMIT 50
+      `
+    } else if (productId && status) {
+      rows = await sql`
+        SELECT *
+        FROM generation_runs
+        WHERE product_id = ${productId}
+          AND status = ${status}
+        ORDER BY created_at DESC
+        LIMIT 50
+      `
+    } else if (featureType && status) {
+      rows = await sql`
+        SELECT *
+        FROM generation_runs
+        WHERE feature_type = ${featureType}
+          AND status = ${status}
+        ORDER BY created_at DESC
+        LIMIT 50
+      `
+    } else if (productId) {
+      rows = await sql`
+        SELECT *
+        FROM generation_runs
+        WHERE product_id = ${productId}
+        ORDER BY created_at DESC
+        LIMIT 50
+      `
+    } else if (featureType) {
+      rows = await sql`
+        SELECT *
+        FROM generation_runs
+        WHERE feature_type = ${featureType}
+        ORDER BY created_at DESC
+        LIMIT 50
+      `
+    } else if (status) {
+      rows = await sql`
+        SELECT *
+        FROM generation_runs
+        WHERE status = ${status}
+        ORDER BY created_at DESC
+        LIMIT 50
+      `
+    } else {
+      rows = await sql`
+        SELECT *
+        FROM generation_runs
+        ORDER BY created_at DESC
+        LIMIT 50
+      `
     }
-
-    if (featureType) {
-      query = query.eq('feature_type', featureType)
-    }
-
-    if (status) {
-      query = query.eq('status', status)
-    }
-
-    const { data, error } = await query
 
     console.log('Query result:', {
-      error: error?.message,
-      dataCount: data?.length,
-      firstItem: data?.[0]?.id
+      dataCount: rows?.length,
+      firstItem: rows?.[0]?.id
     })
 
-    if (error) {
-      console.error('Generation runs query error:', error)
-      return NextResponse.json({ error: error.message }, { status: 500 })
-    }
-
-    return NextResponse.json(data || [])
+    return NextResponse.json(rows || [])
   } catch (error) {
     console.error('Generation runs API error:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
@@ -68,25 +110,29 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const supabase = createAdminClient()
-
     // Create the generation run in pending state
-    const { data: run, error: createError } = await supabase
-      .from('generation_runs')
-      .insert({
-        product_id: validated.data.product_id,
-        feature_type: validated.data.feature_type,
-        config: validated.data.config,
-        status: 'pending',
-      })
-      .select()
-      .single()
-
-    if (createError) {
-      if (createError.code === '23503') {
+    let run
+    try {
+      const rows = await sql`
+        INSERT INTO generation_runs (
+          product_id,
+          feature_type,
+          config,
+          status
+        ) VALUES (
+          ${validated.data.product_id},
+          ${validated.data.feature_type},
+          ${validated.data.config},
+          'pending'
+        )
+        RETURNING *
+      `
+      run = rows[0]
+    } catch (error: any) {
+      if (error?.code === '23503') {
         return NextResponse.json({ error: 'Product not found' }, { status: 404 })
       }
-      return NextResponse.json({ error: createError.message }, { status: 500 })
+      return NextResponse.json({ error: error?.message || 'Database error' }, { status: 500 })
     }
 
     // Assemble the prompt
@@ -98,20 +144,16 @@ export async function POST(request: NextRequest) {
       })
 
       // Update the run with the assembled prompt
-      const { data: updatedRun, error: updateError } = await supabase
-        .from('generation_runs')
-        .update({
-          assembled_prompt: JSON.stringify(assembledPrompt),
-          status: 'pending', // Ready for AI processing
-        })
-        .eq('id', run.id)
-        .select()
-        .single()
+      const updatedRows = await sql`
+        UPDATE generation_runs
+        SET
+          assembled_prompt = ${JSON.stringify(assembledPrompt)},
+          status = 'pending'
+        WHERE id = ${run.id}
+        RETURNING *
+      `
 
-      if (updateError) {
-        return NextResponse.json({ error: updateError.message }, { status: 500 })
-      }
-
+      const updatedRun = updatedRows[0]
       return NextResponse.json(
         {
           ...updatedRun,
@@ -121,13 +163,13 @@ export async function POST(request: NextRequest) {
       )
     } catch (assemblyError) {
       // If prompt assembly fails, mark run as failed
-      await supabase
-        .from('generation_runs')
-        .update({
-          status: 'failed',
-          error_message: assemblyError instanceof Error ? assemblyError.message : 'Prompt assembly failed',
-        })
-        .eq('id', run.id)
+      await sql`
+        UPDATE generation_runs
+        SET
+          status = 'failed',
+          error_message = ${assemblyError instanceof Error ? assemblyError.message : 'Prompt assembly failed'}
+        WHERE id = ${run.id}
+      `
 
       return NextResponse.json(
         { error: 'Prompt assembly failed', details: assemblyError instanceof Error ? assemblyError.message : 'Unknown error' },

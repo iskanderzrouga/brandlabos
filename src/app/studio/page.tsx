@@ -349,6 +349,7 @@ export default function GeneratePage() {
   const [historyVersion, setHistoryVersion] = useState(0)
   const [promptPreview, setPromptPreview] = useState<string | null>(null)
   const [promptPreviewOpen, setPromptPreviewOpen] = useState(false)
+  const [conversationOpen, setConversationOpen] = useState(false)
 
   // Editor
   const [activeTab, setActiveTab] = useState(0)
@@ -1312,6 +1313,7 @@ export default function GeneratePage() {
     setDraftVisibility({})
     setPromptPreviewOpen(false)
     setPromptPreview(null)
+    setConversationOpen(false)
     setThreadHydrating(false)
     historyRef.current = {}
     setHistoryVersion((v) => v + 1)
@@ -1641,6 +1643,56 @@ export default function GeneratePage() {
     </div>
   )
 
+  const conversationPanel = conversationOpen && (
+    <div className="absolute left-4 right-4 bottom-24 z-30">
+      <div className="rounded-2xl border border-[var(--editor-border)] bg-[var(--editor-panel)] shadow-[0_24px_60px_-40px_var(--editor-shadow)] overflow-hidden">
+        <div className="px-4 py-3 border-b border-[var(--editor-border)] flex items-center justify-between">
+          <div>
+            <p className="text-[10px] uppercase tracking-[0.3em] text-[var(--editor-ink-muted)]">
+              Conversation
+            </p>
+            <p className="text-sm font-semibold">Raw agent thread</p>
+          </div>
+          <button
+            onClick={() => setConversationOpen(false)}
+            className="editor-button-ghost text-xs"
+          >
+            Close
+          </button>
+        </div>
+        <div className="p-4 space-y-3 max-h-[60vh] overflow-auto">
+          {promptPreview && (
+            <div className="rounded-2xl border border-[var(--editor-border)] bg-[var(--editor-panel-muted)] p-3">
+              <p className="text-[10px] uppercase tracking-[0.25em] text-[var(--editor-ink-muted)]">
+                System prompt
+              </p>
+              <pre className="mt-2 whitespace-pre-wrap text-[12px] leading-5 text-[var(--editor-ink)]">
+                {promptPreview}
+              </pre>
+            </div>
+          )}
+          {messages.length === 0 ? (
+            <p className="text-xs text-[var(--editor-ink-muted)]">No messages yet.</p>
+          ) : (
+            messages.map((m, idx) => (
+              <div
+                key={`${m.id || idx}`}
+                className="rounded-2xl border border-[var(--editor-border)] bg-[var(--editor-panel-muted)] p-3"
+              >
+                <p className="text-[10px] uppercase tracking-[0.25em] text-[var(--editor-ink-muted)]">
+                  {m.role}
+                </p>
+                <pre className="mt-2 whitespace-pre-wrap text-[12px] leading-5 text-[var(--editor-ink)]">
+                  {m.content}
+                </pre>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  )
+
   if (!threadId && !threadHydrating) {
     return (
       <div className="h-full flex items-center justify-center p-6">
@@ -1702,7 +1754,8 @@ export default function GeneratePage() {
       {promptModal}
       <div className="flex-1 min-h-0 h-full grid grid-cols-1 lg:grid-cols-[360px_1fr] gap-5 p-5 overflow-hidden">
         {/* Chat */}
-        <section className="editor-panel flex flex-col overflow-hidden min-h-0">
+        <section className="editor-panel relative flex flex-col overflow-hidden min-h-0">
+          {conversationPanel}
           <div className="px-4 py-3 border-b border-[var(--editor-border)] bg-[var(--editor-panel)]/70">
             <div className="flex items-center justify-between gap-3">
               <div className="flex items-center gap-2">
@@ -1945,7 +1998,23 @@ export default function GeneratePage() {
                       className="editor-input w-full text-[13px] leading-5 resize-none"
                     />
                   </div>
-                  <div className="flex justify-end">
+                  <div className="flex items-center justify-between">
+                    <button
+                      type="button"
+                      onClick={() => setConversationOpen(true)}
+                      className="editor-icon-ghost"
+                      aria-label="View raw conversation"
+                      title="View raw conversation"
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4" aria-hidden="true">
+                        <path
+                          d="M4 5h12a3 3 0 013 3v8a3 3 0 01-3 3H9l-5 4V8a3 3 0 013-3z"
+                          stroke="currentColor"
+                          strokeWidth="1.8"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                    </button>
                     <button
                       type="submit"
                       className="editor-icon-button"

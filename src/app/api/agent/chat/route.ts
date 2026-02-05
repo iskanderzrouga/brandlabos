@@ -11,7 +11,7 @@ import {
   loadGlobalPromptBlocks,
   type ThreadContext,
 } from '@/lib/agent/compiled-context'
-export const maxDuration = 60
+export const maxDuration = 120
 
 type ToolUseBlock = {
   type: 'tool_use'
@@ -28,14 +28,25 @@ function positiveIntFromEnv(name: string, fallback: number): number {
   return Math.floor(value)
 }
 
+function nonNegativeIntFromEnv(name: string, fallback: number): number {
+  const raw = process.env[name]
+  if (!raw) return fallback
+  const value = Number(raw)
+  if (!Number.isFinite(value) || value < 0) return fallback
+  return Math.floor(value)
+}
+
 const AGENT_MODEL = 'claude-opus-4-6'
 const CONTEXT_MAX_MESSAGES = AGENT_CONTEXT_DEFAULTS.maxMessages
 const CONTEXT_MAX_CHARS = AGENT_CONTEXT_DEFAULTS.maxChars
 const CONTEXT_MAX_CHARS_PER_MESSAGE = AGENT_CONTEXT_DEFAULTS.maxCharsPerMessage
 const AGENT_MAX_STEPS = 2
 const AGENT_MAX_TOKENS = positiveIntFromEnv('AGENT_MAX_TOKENS', 1600)
-const AGENT_CALL_TIMEOUT_MS = positiveIntFromEnv('AGENT_CALL_TIMEOUT_MS', 25_000)
+const AGENT_LOOP_BUDGET_MS = positiveIntFromEnv('AGENT_LOOP_BUDGET_MS', 55_000)
 const AGENT_HISTORY_LIMIT = positiveIntFromEnv('AGENT_HISTORY_LIMIT', 200)
+const ANTHROPIC_MAX_RETRIES = nonNegativeIntFromEnv('ANTHROPIC_MAX_RETRIES', 1)
+const ANTHROPIC_ENABLE_CONTEXT_1M = String(process.env.ANTHROPIC_ENABLE_CONTEXT_1M || '').toLowerCase() === 'true'
+const ANTHROPIC_CONTEXT_1M_BETA = String(process.env.ANTHROPIC_CONTEXT_1M_BETA || 'context-1m-2025-08-07')
 
 function isToolUseBlock(block: unknown): block is ToolUseBlock {
   return (
@@ -98,6 +109,52 @@ function isPromptTooLargeError(error: APIError) {
     haystack.includes('context length') ||
     haystack.includes('max') && haystack.includes('tokens')
   )
+}
+
+function isContext1MBetaAccessError(error: APIError) {
+  const haystack = `${error.message || ''} ${(error as any)?.error?.message || ''}`.toLowerCase()
+  if (error.status !== 400 && error.status !== 403) return false
+  return (
+    haystack.includes('context-1m') ||
+    haystack.includes('beta') ||
+    haystack.includes('tier') ||
+    haystack.includes('not enabled') ||
+    haystack.includes('not available')
+  )
+}
+
+async function createAnthropicMessage(args: {
+  anthropic: Anthropic
+  model: string
+  maxTokens: number
+  system: string
+  messages: any[]
+  tools?: any[]
+}) {
+  const payload: any = {
+    model: args.model,
+    max_tokens: args.maxTokens,
+    system: args.system,
+    messages: args.messages,
+    ...(args.tools ? { tools: args.tools } : {}),
+  }
+
+  if (!ANTHROPIC_ENABLE_CONTEXT_1M) {
+    return args.anthropic.messages.create(payload)
+  }
+
+  try {
+    return await args.anthropic.beta.messages.create({
+      ...payload,
+      betas: [ANTHROPIC_CONTEXT_1M_BETA as any],
+    })
+  } catch (error) {
+    if (error instanceof APIError && isContext1MBetaAccessError(error)) {
+      console.warn('Context 1M beta unavailable for this key/account. Falling back to standard messages API.')
+      return args.anthropic.messages.create(payload)
+    }
+    throw error
+  }
 }
 
 async function ingestMetaSwipe(args: { productId: string; url: string; userId: string }) {
@@ -338,8 +395,7 @@ export async function POST(request: NextRequest) {
 
     const anthropic = new Anthropic({
       apiKey: anthropicKey,
-      timeout: AGENT_CALL_TIMEOUT_MS,
-      maxRetries: 0,
+      maxRetries: ANTHROPIC_MAX_RETRIES,
     })
 
     const model = AGENT_MODEL
@@ -473,14 +529,15 @@ export async function POST(request: NextRequest) {
     let workingMessages: any[] = messages
 
     for (let step = 0; step < maxSteps; step += 1) {
-      if (Date.now() - loopStartedAt > AGENT_CALL_TIMEOUT_MS) {
+      if (Date.now() - loopStartedAt > AGENT_LOOP_BUDGET_MS) {
         console.warn('Agent loop budget exceeded', { threadId, step, model })
         break
       }
 
-      const resp = await anthropic.messages.create({
+      const resp = await createAnthropicMessage({
+        anthropic,
         model,
-        max_tokens: AGENT_MAX_TOKENS,
+        maxTokens: AGENT_MAX_TOKENS,
         system,
         messages: workingMessages,
         ...(activeTools ? { tools: activeTools } : {}),
@@ -552,7 +609,10 @@ export async function POST(request: NextRequest) {
           context_max_chars_per_message: CONTEXT_MAX_CHARS_PER_MESSAGE,
           max_steps: maxSteps,
           max_tokens: AGENT_MAX_TOKENS,
-          call_timeout_ms: AGENT_CALL_TIMEOUT_MS,
+          loop_budget_ms: AGENT_LOOP_BUDGET_MS,
+          anthropic_max_retries: ANTHROPIC_MAX_RETRIES,
+          context_1m_enabled: ANTHROPIC_ENABLE_CONTEXT_1M,
+          context_1m_beta: ANTHROPIC_ENABLE_CONTEXT_1M ? ANTHROPIC_CONTEXT_1M_BETA : null,
         },
         tools_enabled: Boolean(activeTools),
       }
@@ -566,7 +626,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         {
           error:
-            'Agent timed out before the model finished. Increase server runtime budget or retry with fewer active attachments.',
+            'Anthropic request timed out before completion.',
           error_code: 'anthropic_timeout',
         },
         { status: 504 }

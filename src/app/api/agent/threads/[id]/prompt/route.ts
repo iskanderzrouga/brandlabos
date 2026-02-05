@@ -116,11 +116,11 @@ function buildSystemPrompt(args: {
   return sections.join('\n\n---\n\n')
 }
 
-export async function GET(_request: NextRequest, ctx: { params: { id: string } }) {
+export async function GET(_request: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const user = await requireAuth()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const threadId = ctx.params.id
+  const { id: threadId } = await ctx.params
   if (!threadId) return NextResponse.json({ error: 'Thread not found' }, { status: 404 })
 
   const threadRows = await sql`

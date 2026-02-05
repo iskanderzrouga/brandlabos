@@ -314,6 +314,35 @@ Text:
 {{text}}`,
   },
 
+  research_synthesis_system: {
+    name: 'Research Synthesis System',
+    content:
+      'You are a precise research strategist for direct-response copywriting. Output ONLY valid JSON that matches the requested schema.',
+  },
+
+  research_synthesis_prompt: {
+    name: 'Research Synthesis Prompt',
+    content: `Analyze the research items below and return JSON with keys:
+- avatars: [{ name, content }]
+- positionings: [{ name, content }]
+- quotes: [{ quote, source, note }]
+- awareness_insights: [{ name, summary, application }]
+
+Rules:
+- Keep each array concise (0-6 entries).
+- Use practical language for marketers.
+- Names should be short and clear.
+- content/summary/application should be specific and useful.
+- Only include sections requested in extract flags.
+- Output ONLY JSON.
+
+Extract flags:
+{{extract}}
+
+Items:
+{{items}}`,
+  },
+
   // ============================================================================
   // SHARED BLOCKS - Used across all content types
   // ============================================================================

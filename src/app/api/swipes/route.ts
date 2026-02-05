@@ -6,6 +6,8 @@ import { requireAuth } from '@/lib/require-auth'
 import { getOrgApiKey } from '@/lib/api-keys'
 import { DEFAULT_PROMPT_BLOCKS } from '@/lib/prompt-defaults'
 
+const AGENT_MODEL = 'claude-opus-4-6'
+
 type PromptBlockRow = {
   id: string
   type: string
@@ -31,13 +33,15 @@ async function loadGlobalPromptBlocks(): Promise<Map<string, PromptBlockRow>> {
     FROM prompt_blocks
     WHERE is_active = true
       AND scope = 'global'
-    ORDER BY updated_at ASC, created_at ASC
+    ORDER BY updated_at DESC NULLS LAST, version DESC, created_at DESC
   ` as PromptBlockRow[]
 
   const map = new Map<string, PromptBlockRow>()
   for (const b of blocks || []) {
     const key = (b.metadata as { key?: string } | undefined)?.key || b.type
-    map.set(key, b)
+    if (!map.has(key)) {
+      map.set(key, b)
+    }
   }
   return map
 }
@@ -82,7 +86,7 @@ async function generateSwipeTitle(args: {
     excerpt,
   })
   const response = await anthropic.messages.create({
-    model: process.env.ANTHROPIC_AGENT_MODEL || 'claude-opus-4-6',
+    model: AGENT_MODEL,
     max_tokens: 60,
     temperature: 0.2,
     system: system || undefined,
@@ -111,15 +115,28 @@ export async function GET(request: NextRequest) {
       const like = `%${q}%`
       const rows = await sql`
         SELECT
-          id, product_id, source, source_url, status, title, summary, created_at, updated_at,
-          (
-            SELECT mj.status
-            FROM media_jobs mj
-            WHERE mj.input->>'swipe_id' = swipes.id::text
-            ORDER BY mj.created_at DESC
-            LIMIT 1
-          ) AS job_status
+          swipes.id,
+          swipes.product_id,
+          swipes.source,
+          swipes.source_url,
+          swipes.status,
+          swipes.title,
+          swipes.summary,
+          swipes.created_at,
+          swipes.updated_at,
+          mj.id AS job_id,
+          mj.status AS job_status,
+          mj.error_message AS job_error_message,
+          mj.updated_at AS job_updated_at,
+          mj.attempts AS job_attempts
         FROM swipes
+        LEFT JOIN LATERAL (
+          SELECT id, status, error_message, updated_at, attempts
+          FROM media_jobs
+          WHERE input->>'swipe_id' = swipes.id::text
+          ORDER BY created_at DESC
+          LIMIT 1
+        ) mj ON true
         WHERE product_id = ${productId}
           AND (
             title ILIKE ${like}
@@ -134,15 +151,28 @@ export async function GET(request: NextRequest) {
 
     const rows = await sql`
       SELECT
-        id, product_id, source, source_url, status, title, summary, created_at, updated_at,
-        (
-          SELECT mj.status
-          FROM media_jobs mj
-          WHERE mj.input->>'swipe_id' = swipes.id::text
-          ORDER BY mj.created_at DESC
-          LIMIT 1
-        ) AS job_status
+        swipes.id,
+        swipes.product_id,
+        swipes.source,
+        swipes.source_url,
+        swipes.status,
+        swipes.title,
+        swipes.summary,
+        swipes.created_at,
+        swipes.updated_at,
+        mj.id AS job_id,
+        mj.status AS job_status,
+        mj.error_message AS job_error_message,
+        mj.updated_at AS job_updated_at,
+        mj.attempts AS job_attempts
       FROM swipes
+      LEFT JOIN LATERAL (
+        SELECT id, status, error_message, updated_at, attempts
+        FROM media_jobs
+        WHERE input->>'swipe_id' = swipes.id::text
+        ORDER BY created_at DESC
+        LIMIT 1
+      ) mj ON true
       WHERE product_id = ${productId}
       ORDER BY created_at DESC
       LIMIT 200

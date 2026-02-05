@@ -5,6 +5,8 @@ import { requireAuth } from '@/lib/require-auth'
 import { DEFAULT_PROMPT_BLOCKS } from '@/lib/prompt-defaults'
 import { getOrgApiKey } from '@/lib/api-keys'
 
+export const maxDuration = 120
+
 type ThreadContext = {
   skill?: string
   versions?: number
@@ -27,6 +29,32 @@ type ToolUseBlock = {
   name: string
   input: unknown
 }
+
+function positiveIntFromEnv(name: string, fallback: number): number {
+  const raw = process.env[name]
+  if (!raw) return fallback
+  const value = Number(raw)
+  if (!Number.isFinite(value) || value <= 0) return fallback
+  return Math.floor(value)
+}
+
+function nonNegativeIntFromEnv(name: string, fallback: number): number {
+  const raw = process.env[name]
+  if (!raw) return fallback
+  const value = Number(raw)
+  if (!Number.isFinite(value) || value < 0) return fallback
+  return Math.floor(value)
+}
+
+const AGENT_MAX_STEPS = positiveIntFromEnv('AGENT_MAX_STEPS', 2)
+const AGENT_MAX_TOKENS = positiveIntFromEnv('AGENT_MAX_TOKENS', 1400)
+const AGENT_LOOP_BUDGET_MS = positiveIntFromEnv('AGENT_LOOP_BUDGET_MS', 25_000)
+const AGENT_HISTORY_LIMIT = positiveIntFromEnv('AGENT_HISTORY_LIMIT', 40)
+const AGENT_CONTEXT_MAX_MESSAGES = positiveIntFromEnv('AGENT_CONTEXT_MAX_MESSAGES', 14)
+const AGENT_CONTEXT_MAX_CHARS = positiveIntFromEnv('AGENT_CONTEXT_MAX_CHARS', 24_000)
+const AGENT_CONTEXT_MAX_CHARS_PER_MESSAGE = positiveIntFromEnv('AGENT_CONTEXT_MAX_CHARS_PER_MESSAGE', 6_000)
+const ANTHROPIC_TIMEOUT_MS = positiveIntFromEnv('ANTHROPIC_TIMEOUT_MS', 20_000)
+const ANTHROPIC_MAX_RETRIES = nonNegativeIntFromEnv('ANTHROPIC_MAX_RETRIES', 0)
 
 function isToolUseBlock(block: unknown): block is ToolUseBlock {
   return (
@@ -159,6 +187,70 @@ function deriveThreadTitle(message: string) {
   const sentence = clean.split(/[.!?\n]/)[0]
   const clipped = sentence.length > 80 ? sentence.slice(0, 80).trim() : sentence
   return clipped || null
+}
+
+function shouldEnableTools(messageText: string, threadContext: ThreadContext) {
+  if (threadContext.active_swipe_id) return true
+  if (Array.isArray(threadContext.research_ids) && threadContext.research_ids.length > 0) return true
+  const text = messageText.toLowerCase()
+  if (text.includes('facebook.com/ads/library')) return true
+
+  return (
+    text.includes('ingest meta') ||
+    text.includes('ad library') ||
+    text.includes('list swipes') ||
+    text.includes('get swipe') ||
+    text.includes('show swipe') ||
+    text.includes('transcript') ||
+    text.includes('ingest')
+  )
+}
+
+function clipWithMarker(value: string, maxChars: number): { text: string; clipped: boolean } {
+  if (maxChars <= 0) return { text: '', clipped: value.length > 0 }
+  if (value.length <= maxChars) return { text: value, clipped: false }
+  if (maxChars <= 20) return { text: value.slice(0, maxChars), clipped: true }
+  const marker = '\n[truncated]'
+  const keep = Math.max(1, maxChars - marker.length)
+  return { text: `${value.slice(0, keep)}${marker}`, clipped: true }
+}
+
+function buildBoundedMessages(rows: Array<{ role: string; content: string }>) {
+  const normalized = (rows || [])
+    .map((row) => {
+      const role = row.role === 'assistant' ? 'assistant' : 'user'
+      const baseContent = row.role === 'tool' ? `[tool] ${String(row.content || '')}` : String(row.content || '')
+      return { role, content: baseContent.trim() }
+    })
+    .filter((row) => row.content.length > 0)
+
+  const reversed: Array<{ role: 'assistant' | 'user'; content: string }> = []
+  let charBudget = 0
+
+  for (let idx = normalized.length - 1; idx >= 0; idx -= 1) {
+    if (reversed.length >= AGENT_CONTEXT_MAX_MESSAGES) break
+    if (charBudget >= AGENT_CONTEXT_MAX_CHARS) break
+
+    const row = normalized[idx]
+    const isNewestMessage = reversed.length === 0
+    const perMessageLimit =
+      isNewestMessage && row.role === 'user'
+        ? Math.max(AGENT_CONTEXT_MAX_CHARS_PER_MESSAGE, row.content.length)
+        : AGENT_CONTEXT_MAX_CHARS_PER_MESSAGE
+
+    const perMessageClipped = clipWithMarker(row.content, perMessageLimit)
+    let nextContent = perMessageClipped.text
+    const remaining = AGENT_CONTEXT_MAX_CHARS - charBudget
+    if (nextContent.length > remaining) {
+      nextContent = clipWithMarker(nextContent, remaining).text
+    }
+    if (!nextContent) continue
+
+    charBudget += nextContent.length
+    reversed.push({ role: row.role as 'assistant' | 'user', content: nextContent })
+  }
+
+  return reversed.reverse()
 }
 
 async function ingestMetaSwipe(args: { productId: string; url: string; userId: string }) {
@@ -375,25 +467,27 @@ export async function POST(request: NextRequest) {
       SELECT role, content
       FROM agent_messages
       WHERE thread_id = ${threadId}
-      ORDER BY created_at ASC
-      LIMIT 40
+      ORDER BY created_at DESC
+      LIMIT ${AGENT_HISTORY_LIMIT}
     `
 
-    // Convert persisted messages to Anthropic messages
-    const messages: any[] = historyRows.map((m: any) => {
-      const role = m.role === 'assistant' ? 'assistant' : 'user'
-      const content = m.role === 'tool' ? `[tool] ${m.content}` : m.content
-      return { role, content }
-    })
+    // Keep a bounded, recent context window so long history doesn't blow up request size.
+    const messages: any[] = buildBoundedMessages(
+      (historyRows as Array<{ role: string; content: string }>).reverse()
+    )
 
     const anthropicKey = await getOrgApiKey('anthropic', productRow.organization_id || null)
     if (!anthropicKey) {
       return NextResponse.json({ error: 'ANTHROPIC_API_KEY is not set' }, { status: 500 })
     }
 
-    const anthropic = new Anthropic({ apiKey: anthropicKey })
+    const anthropic = new Anthropic({
+      apiKey: anthropicKey,
+      timeout: ANTHROPIC_TIMEOUT_MS,
+      maxRetries: ANTHROPIC_MAX_RETRIES,
+    })
 
-    const model = process.env.ANTHROPIC_AGENT_MODEL || 'claude-opus-4-6'
+    const model = 'claude-opus-4-6'
 
     const tools: any[] = [
       {
@@ -514,18 +608,24 @@ export async function POST(request: NextRequest) {
       return { error: `Unknown tool: ${toolUse.name}` }
     }
 
+    const activeTools = shouldEnableTools(messageText, threadContext) ? tools : undefined
+    const loopStartedAt = Date.now()
     // Agent loop with tool calling.
-    const maxSteps = 6
+    const maxSteps = activeTools ? AGENT_MAX_STEPS : 1
     let assistantText = ''
     let workingMessages: any[] = messages
 
     for (let step = 0; step < maxSteps; step += 1) {
+      if (Date.now() - loopStartedAt > AGENT_LOOP_BUDGET_MS) {
+        console.warn('Agent loop budget exceeded', { threadId, step, model })
+        break
+      }
       const resp = await anthropic.messages.create({
         model,
-        max_tokens: 2200,
+        max_tokens: AGENT_MAX_TOKENS,
         system,
         messages: workingMessages,
-        tools,
+        ...(activeTools ? { tools: activeTools } : {}),
       })
 
       const content = resp.content || []
@@ -541,7 +641,7 @@ export async function POST(request: NextRequest) {
       // call has the proper tool_use ids in context.
       workingMessages = workingMessages.concat([{ role: 'assistant', content }])
 
-      if (toolUses.length === 0) break
+      if (!activeTools || toolUses.length === 0) break
 
       for (const tu of toolUses) {
         const result = await runTool(tu)

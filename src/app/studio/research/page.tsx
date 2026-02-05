@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { useAppContext } from '@/components/app-shell'
-import { FeedbackNotice } from '@/components/ui/feedback'
+import { ConfirmDialog, FeedbackNotice } from '@/components/ui/feedback'
 
 type ResearchCategory = {
   id: string
@@ -28,6 +28,13 @@ type OrganizePlan = {
   assignments: Array<{ item_id: string; category_name: string }>
 }
 
+type SynthesisPlan = {
+  avatars: Array<{ name: string; content: string }>
+  positionings: Array<{ name: string; content: string }>
+  quotes: Array<{ quote: string; source?: string; note?: string }>
+  awareness_insights: Array<{ name: string; summary: string; application?: string }>
+}
+
 const MAX_UPLOAD_MB = 20
 
 export default function ResearchPage() {
@@ -49,6 +56,18 @@ export default function ResearchPage() {
   const [organizing, setOrganizing] = useState(false)
   const [organizeOpen, setOrganizeOpen] = useState(false)
   const [feedback, setFeedback] = useState<{ tone: 'info' | 'success' | 'error'; message: string } | null>(null)
+  const [synthesizeOpen, setSynthesizeOpen] = useState(false)
+  const [synthesisPlan, setSynthesisPlan] = useState<SynthesisPlan | null>(null)
+  const [synthLoading, setSynthLoading] = useState(false)
+  const [synthApplying, setSynthApplying] = useState(false)
+  const [synthExtract, setSynthExtract] = useState({
+    avatars: true,
+    positioning: true,
+    quotes: true,
+    awareness: true,
+  })
+  const [researchItemToDelete, setResearchItemToDelete] = useState<string | null>(null)
+  const [deletingResearchItem, setDeletingResearchItem] = useState(false)
 
   const stuckCount = useMemo(() => {
     const now = Date.now()
@@ -247,6 +266,98 @@ export default function ResearchPage() {
     }
   }
 
+  function getActiveThreadId() {
+    if (!selectedProduct || typeof window === 'undefined') return ''
+    const storageKey = `bl_active_thread_${selectedProduct}`
+    return localStorage.getItem(storageKey) || ''
+  }
+
+  function emptySynthesisPlan(): SynthesisPlan {
+    return {
+      avatars: [],
+      positionings: [],
+      quotes: [],
+      awareness_insights: [],
+    }
+  }
+
+  async function runSynthesis() {
+    if (!selectedProduct) return
+    setSynthLoading(true)
+    try {
+      const res = await fetch('/api/research/synthesize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          product_id: selectedProduct,
+          item_ids: items.map((item) => item.id),
+          extract: synthExtract,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data?.error || 'Failed to synthesize')
+      setSynthesisPlan({
+        avatars: Array.isArray(data?.avatars) ? data.avatars : [],
+        positionings: Array.isArray(data?.positionings) ? data.positionings : [],
+        quotes: Array.isArray(data?.quotes) ? data.quotes : [],
+        awareness_insights: Array.isArray(data?.awareness_insights) ? data.awareness_insights : [],
+      })
+      setSynthesizeOpen(true)
+    } catch (err) {
+      setFeedback({
+        tone: 'error',
+        message: err instanceof Error ? err.message : 'Failed to synthesize',
+      })
+    } finally {
+      setSynthLoading(false)
+    }
+  }
+
+  async function applySynthesis(planOverride?: SynthesisPlan) {
+    if (!selectedProduct) return
+    const plan = planOverride || synthesisPlan
+    if (!plan) return
+    setSynthApplying(true)
+    try {
+      const res = await fetch('/api/research/synthesize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          product_id: selectedProduct,
+          apply: true,
+          proposals: plan,
+          thread_id: getActiveThreadId() || undefined,
+          extract: synthExtract,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data?.error || 'Failed to apply synthesis')
+
+      const created = data?.created || {}
+      const avatarCount = Array.isArray(created.avatar_ids) ? created.avatar_ids.length : 0
+      const pitchCount = Array.isArray(created.pitch_ids) ? created.pitch_ids.length : 0
+      const insightCount = Array.isArray(created.research_item_ids) ? created.research_item_ids.length : 0
+
+      setFeedback({
+        tone: 'success',
+        message: `Applied synthesis. Avatars: ${avatarCount}, Positioning: ${pitchCount}, Insights: ${insightCount}.`,
+      })
+
+      if (!planOverride) {
+        setSynthesizeOpen(false)
+      }
+      await loadCategories()
+      await loadItems()
+    } catch (err) {
+      setFeedback({
+        tone: 'error',
+        message: err instanceof Error ? err.message : 'Failed to apply synthesis',
+      })
+    } finally {
+      setSynthApplying(false)
+    }
+  }
+
   async function ensureThreadForAttach(): Promise<string | null> {
     if (!selectedProduct) return null
     const storageKey = `bl_active_thread_${selectedProduct}`
@@ -301,6 +412,26 @@ export default function ResearchPage() {
       body: JSON.stringify({ context: { research_ids: next } }),
     })
     setFeedback({ tone: 'success', message: 'Attached to Agent.' })
+  }
+
+  async function deleteResearchItem(itemId: string) {
+    if (deletingResearchItem) return
+    setDeletingResearchItem(true)
+    try {
+      const res = await fetch(`/api/research/items/${itemId}`, { method: 'DELETE' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data?.error || 'Failed to delete research item')
+      setItems((prev) => prev.filter((item) => item.id !== itemId))
+      await loadCategories()
+      setFeedback({ tone: 'success', message: 'Research item deleted.' })
+    } catch (err) {
+      setFeedback({
+        tone: 'error',
+        message: err instanceof Error ? err.message : 'Failed to delete research item',
+      })
+    } finally {
+      setDeletingResearchItem(false)
+    }
   }
 
   if (!selectedProduct) {
@@ -382,18 +513,47 @@ export default function ResearchPage() {
           </div>
 
           <div className="mt-auto pt-4">
-            <button
-              onClick={runOrganize}
-              disabled={organizing}
-              className="editor-button w-full text-sm"
-            >
-              {organizing ? 'Organizing...' : 'Organize Inbox'}
-            </button>
+            <div className="space-y-2">
+              <button
+                onClick={runOrganize}
+                disabled={organizing}
+                className="editor-button w-full text-sm"
+              >
+                {organizing ? 'Organizing...' : 'Organize Inbox'}
+              </button>
+              <button
+                onClick={runSynthesis}
+                disabled={synthLoading || items.length === 0}
+                className="editor-button-ghost w-full text-sm"
+              >
+                {synthLoading ? 'Synthesizing...' : 'Synthesize Insights'}
+              </button>
+            </div>
           </div>
         </aside>
 
         {/* Main */}
         <section className="flex-1 min-h-0 flex flex-col gap-4 overflow-hidden">
+          <div className="editor-panel p-5">
+            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+              <div>
+                <p className="text-[10px] uppercase tracking-[0.3em] text-[var(--editor-ink-muted)]">
+                  How Research Works
+                </p>
+                <p className="text-sm text-[var(--editor-ink-muted)] mt-2">
+                  Add raw research, organize it into categories, then synthesize avatars, angles, quotes, and awareness insights you can apply directly.
+                </p>
+              </div>
+              <button
+                onClick={runSynthesis}
+                disabled={synthLoading || items.length === 0}
+                className="editor-button text-sm"
+              >
+                {synthLoading ? 'Synthesizing...' : 'Synthesize Insights'}
+              </button>
+            </div>
+          </div>
+
           <div className="editor-panel p-5">
             <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
               <div>
@@ -505,6 +665,12 @@ export default function ResearchPage() {
                         >
                           Attach to Agent
                         </button>
+                        <button
+                          onClick={() => setResearchItemToDelete(item.id)}
+                          className="editor-button-ghost text-xs text-red-400"
+                        >
+                          Delete
+                        </button>
                         {item.status === 'processing' && (
                           <span className="text-[10px] text-[var(--editor-ink-muted)]">
                             Processing…
@@ -590,6 +756,284 @@ export default function ResearchPage() {
           </div>
         </div>
       )}
+
+      {synthesizeOpen && (
+        <div className="fixed inset-0 z-50">
+          <div
+            className="absolute inset-0 bg-black/25 backdrop-blur-sm"
+            onClick={() => setSynthesizeOpen(false)}
+          />
+          <div className="absolute inset-0 flex items-center justify-center p-6">
+            <div className="editor-panel w-full max-w-4xl p-6 max-h-[86vh] overflow-auto">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-[10px] uppercase tracking-[0.3em] text-[var(--editor-ink-muted)]">
+                    Synthesis
+                  </p>
+                  <h2 className="font-serif text-2xl">Research Insights</h2>
+                  <p className="text-sm text-[var(--editor-ink-muted)] mt-1">
+                    Generate strategy-ready outputs and apply what you want.
+                  </p>
+                </div>
+                <button
+                  onClick={() => setSynthesizeOpen(false)}
+                  className="text-sm text-[var(--editor-ink-muted)]"
+                >
+                  Close
+                </button>
+              </div>
+
+              <div className="mt-4 editor-panel-soft p-4">
+                <p className="text-xs uppercase tracking-[0.22em] text-[var(--editor-ink-muted)]">
+                  Extract
+                </p>
+                <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <label className="text-xs text-[var(--editor-ink-muted)] flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={synthExtract.avatars}
+                      onChange={(e) =>
+                        setSynthExtract((prev) => ({ ...prev, avatars: e.target.checked }))
+                      }
+                    />
+                    Avatars
+                  </label>
+                  <label className="text-xs text-[var(--editor-ink-muted)] flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={synthExtract.positioning}
+                      onChange={(e) =>
+                        setSynthExtract((prev) => ({ ...prev, positioning: e.target.checked }))
+                      }
+                    />
+                    Positioning
+                  </label>
+                  <label className="text-xs text-[var(--editor-ink-muted)] flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={synthExtract.quotes}
+                      onChange={(e) =>
+                        setSynthExtract((prev) => ({ ...prev, quotes: e.target.checked }))
+                      }
+                    />
+                    Quotes
+                  </label>
+                  <label className="text-xs text-[var(--editor-ink-muted)] flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={synthExtract.awareness}
+                      onChange={(e) =>
+                        setSynthExtract((prev) => ({ ...prev, awareness: e.target.checked }))
+                      }
+                    />
+                    Awareness
+                  </label>
+                </div>
+                <div className="mt-3">
+                  <button
+                    onClick={runSynthesis}
+                    disabled={synthLoading}
+                    className="editor-button text-sm"
+                  >
+                    {synthLoading ? 'Generating...' : 'Regenerate'}
+                  </button>
+                </div>
+              </div>
+
+              {!synthesisPlan ? (
+                <div className="mt-5 editor-panel-soft p-8 text-center">
+                  <p className="text-sm text-[var(--editor-ink-muted)]">
+                    Generate insights to preview proposals.
+                  </p>
+                </div>
+              ) : (
+                <div className="mt-5 space-y-5">
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    <div className="editor-panel-soft p-3 text-center text-xs">
+                      Avatars: {synthesisPlan.avatars.length}
+                    </div>
+                    <div className="editor-panel-soft p-3 text-center text-xs">
+                      Positioning: {synthesisPlan.positionings.length}
+                    </div>
+                    <div className="editor-panel-soft p-3 text-center text-xs">
+                      Quotes: {synthesisPlan.quotes.length}
+                    </div>
+                    <div className="editor-panel-soft p-3 text-center text-xs">
+                      Awareness: {synthesisPlan.awareness_insights.length}
+                    </div>
+                  </div>
+
+                  {synthesisPlan.avatars.length > 0 && (
+                    <div className="space-y-3">
+                      <p className="text-xs uppercase tracking-[0.22em] text-[var(--editor-ink-muted)]">
+                        Avatars
+                      </p>
+                      {synthesisPlan.avatars.map((avatar, idx) => (
+                        <div key={`${avatar.name}-${idx}`} className="editor-panel p-4">
+                          <div className="flex items-start justify-between gap-4">
+                            <div className="min-w-0">
+                              <p className="text-sm font-semibold">{avatar.name}</p>
+                              <p className="text-sm text-[var(--editor-ink-muted)] mt-2 leading-6 whitespace-pre-wrap">
+                                {avatar.content}
+                              </p>
+                            </div>
+                            <button
+                              onClick={() =>
+                                applySynthesis({
+                                  ...emptySynthesisPlan(),
+                                  avatars: [avatar],
+                                })
+                              }
+                              disabled={synthApplying}
+                              className="editor-button-ghost text-xs"
+                            >
+                              Apply
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {synthesisPlan.positionings.length > 0 && (
+                    <div className="space-y-3">
+                      <p className="text-xs uppercase tracking-[0.22em] text-[var(--editor-ink-muted)]">
+                        Positioning
+                      </p>
+                      {synthesisPlan.positionings.map((positioning, idx) => (
+                        <div key={`${positioning.name}-${idx}`} className="editor-panel p-4">
+                          <div className="flex items-start justify-between gap-4">
+                            <div className="min-w-0">
+                              <p className="text-sm font-semibold">{positioning.name}</p>
+                              <p className="text-sm text-[var(--editor-ink-muted)] mt-2 leading-6 whitespace-pre-wrap">
+                                {positioning.content}
+                              </p>
+                            </div>
+                            <button
+                              onClick={() =>
+                                applySynthesis({
+                                  ...emptySynthesisPlan(),
+                                  positionings: [positioning],
+                                })
+                              }
+                              disabled={synthApplying}
+                              className="editor-button-ghost text-xs"
+                            >
+                              Apply
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {synthesisPlan.quotes.length > 0 && (
+                    <div className="space-y-3">
+                      <p className="text-xs uppercase tracking-[0.22em] text-[var(--editor-ink-muted)]">
+                        Quotes
+                      </p>
+                      {synthesisPlan.quotes.map((quote, idx) => (
+                        <div key={`${quote.quote}-${idx}`} className="editor-panel p-4">
+                          <div className="flex items-start justify-between gap-4">
+                            <div className="min-w-0">
+                              <p className="text-sm text-[var(--editor-ink)] leading-6">
+                                "{quote.quote}"
+                              </p>
+                              {(quote.source || quote.note) && (
+                                <p className="text-xs text-[var(--editor-ink-muted)] mt-2">
+                                  {[quote.source, quote.note].filter(Boolean).join(' · ')}
+                                </p>
+                              )}
+                            </div>
+                            <button
+                              onClick={() =>
+                                applySynthesis({
+                                  ...emptySynthesisPlan(),
+                                  quotes: [quote],
+                                })
+                              }
+                              disabled={synthApplying}
+                              className="editor-button-ghost text-xs"
+                            >
+                              Apply
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {synthesisPlan.awareness_insights.length > 0 && (
+                    <div className="space-y-3">
+                      <p className="text-xs uppercase tracking-[0.22em] text-[var(--editor-ink-muted)]">
+                        Awareness Insights
+                      </p>
+                      {synthesisPlan.awareness_insights.map((insight, idx) => (
+                        <div key={`${insight.name}-${idx}`} className="editor-panel p-4">
+                          <div className="flex items-start justify-between gap-4">
+                            <div className="min-w-0">
+                              <p className="text-sm font-semibold">{insight.name}</p>
+                              <p className="text-sm text-[var(--editor-ink-muted)] mt-2 leading-6">
+                                {insight.summary}
+                              </p>
+                              {insight.application && (
+                                <p className="text-xs text-[var(--editor-ink-muted)] mt-2">
+                                  Application: {insight.application}
+                                </p>
+                              )}
+                            </div>
+                            <button
+                              onClick={() =>
+                                applySynthesis({
+                                  ...emptySynthesisPlan(),
+                                  awareness_insights: [insight],
+                                })
+                              }
+                              disabled={synthApplying}
+                              className="editor-button-ghost text-xs"
+                            >
+                              Apply
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="mt-6 flex items-center justify-end gap-3">
+                <button
+                  onClick={() => setSynthesizeOpen(false)}
+                  className="editor-button-ghost text-sm"
+                >
+                  Close
+                </button>
+                <button
+                  onClick={() => applySynthesis()}
+                  disabled={synthApplying || !synthesisPlan}
+                  className="editor-button text-sm"
+                >
+                  {synthApplying ? 'Applying...' : 'Apply All'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      <ConfirmDialog
+        open={Boolean(researchItemToDelete)}
+        title="Delete this research item?"
+        description="This action cannot be undone."
+        confirmLabel="Delete"
+        tone="danger"
+        busy={deletingResearchItem}
+        onCancel={() => setResearchItemToDelete(null)}
+        onConfirm={() => {
+          if (!researchItemToDelete) return
+          void deleteResearchItem(researchItemToDelete).then(() => setResearchItemToDelete(null))
+        }}
+      />
     </div>
   )
 }

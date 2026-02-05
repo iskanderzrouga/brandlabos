@@ -35,6 +35,8 @@ export default function LibraryPage() {
   const [q, setQ] = useState('')
   const [feedback, setFeedback] = useState<{ tone: 'info' | 'success' | 'error'; message: string } | null>(null)
   const [threadToDelete, setThreadToDelete] = useState<string | null>(null)
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [deleting, setDeleting] = useState(false)
 
   async function handleDelete(id: string) {
@@ -51,6 +53,37 @@ export default function LibraryPage() {
       setFeedback({ tone: 'success', message: 'Asset deleted.' })
     } catch {
       setFeedback({ tone: 'error', message: 'Failed to delete asset' })
+    } finally {
+      setDeleting(false)
+    }
+  }
+
+  async function handleBulkDelete(ids: string[]) {
+    if (deleting) return
+    const uniqueIds = Array.from(new Set(ids)).filter(Boolean)
+    if (uniqueIds.length === 0) return
+
+    setDeleting(true)
+    try {
+      const res = await fetch('/api/agent/threads', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: uniqueIds }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setFeedback({ tone: 'error', message: data?.error || 'Failed to delete selected assets' })
+        return
+      }
+      const deletedSet = new Set<string>(Array.isArray(data?.deleted_ids) ? data.deleted_ids : uniqueIds)
+      setThreads((prev) => prev.filter((t) => !deletedSet.has(t.id)))
+      setSelectedIds((prev) => prev.filter((id) => !deletedSet.has(id)))
+      setFeedback({
+        tone: 'success',
+        message: `${Number(data?.deleted || deletedSet.size)} asset${Number(data?.deleted || deletedSet.size) === 1 ? '' : 's'} deleted.`,
+      })
+    } catch {
+      setFeedback({ tone: 'error', message: 'Failed to delete selected assets' })
     } finally {
       setDeleting(false)
     }
@@ -75,6 +108,10 @@ export default function LibraryPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedProduct])
 
+  useEffect(() => {
+    setSelectedIds([])
+  }, [selectedProduct])
+
   const filtered = useMemo(() => {
     const query = q.trim().toLowerCase()
     if (!query) return threads
@@ -84,6 +121,35 @@ export default function LibraryPage() {
       return `${title} ${excerpt}`.toLowerCase().includes(query)
     })
   }, [threads, q])
+
+  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds])
+  const selectedCount = selectedIds.length
+  const visibleSelectedCount = useMemo(
+    () => filtered.reduce((count, row) => (selectedSet.has(row.id) ? count + 1 : count), 0),
+    [filtered, selectedSet]
+  )
+  const allVisibleSelected = filtered.length > 0 && visibleSelectedCount === filtered.length
+
+  function toggleSelect(id: string) {
+    setSelectedIds((prev) => {
+      if (prev.includes(id)) return prev.filter((value) => value !== id)
+      return [...prev, id]
+    })
+  }
+
+  function toggleSelectAllVisible() {
+    const visibleIds = filtered.map((row) => row.id)
+    if (visibleIds.length === 0) return
+    setSelectedIds((prev) => {
+      const prevSet = new Set(prev)
+      const everyVisibleSelected = visibleIds.every((id) => prevSet.has(id))
+      if (everyVisibleSelected) {
+        return prev.filter((id) => !visibleIds.includes(id))
+      }
+      for (const id of visibleIds) prevSet.add(id)
+      return Array.from(prevSet)
+    })
+  }
 
   if (!selectedProduct) {
     return (
@@ -131,6 +197,33 @@ export default function LibraryPage() {
           />
         </div>
 
+        {filtered.length > 0 && (
+          <div className="editor-panel-soft p-3 mb-4 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+            <label className="inline-flex items-center gap-2 text-sm text-[var(--editor-ink)]">
+              <input
+                type="checkbox"
+                checked={allVisibleSelected}
+                onChange={toggleSelectAllVisible}
+                className="h-4 w-4"
+              />
+              Select all shown ({filtered.length})
+            </label>
+            <div className="flex items-center gap-3">
+              <span className="text-xs text-[var(--editor-ink-muted)]">
+                {selectedCount} selected
+              </span>
+              <button
+                type="button"
+                disabled={selectedCount === 0 || deleting}
+                onClick={() => setBulkDeleteOpen(true)}
+                className="editor-button text-xs disabled:opacity-50"
+              >
+                {deleting ? 'Deleting...' : `Delete selected (${selectedCount})`}
+              </button>
+            </div>
+          </div>
+        )}
+
         {loading ? (
           <p className="text-sm text-[var(--editor-ink-muted)]">Loading...</p>
         ) : filtered.length === 0 ? (
@@ -145,14 +238,27 @@ export default function LibraryPage() {
               const title = t.draft_title || t.title || 'Untitled draft'
               const excerpt = excerptFromDraft(t.draft_content)
               return (
-                <Link
+                <div
                   key={t.id}
-                  href={`/studio?thread=${t.id}`}
                   className="editor-panel p-5 hover:-translate-y-0.5 transition-transform"
                 >
                   <div className="flex items-start justify-between gap-4">
-                    <div className="min-w-0">
-                      <p className="text-sm font-semibold truncate">{title}</p>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="checkbox"
+                          checked={selectedSet.has(t.id)}
+                          onChange={() => toggleSelect(t.id)}
+                          className="h-4 w-4"
+                          aria-label={`Select ${title}`}
+                        />
+                        <Link
+                          href={`/studio?thread=${t.id}`}
+                          className="text-sm font-semibold truncate hover:underline"
+                        >
+                          {title}
+                        </Link>
+                      </div>
                       {excerpt && (
                         <p className="text-sm text-[var(--editor-ink-muted)] mt-2 leading-6">
                           {excerpt}
@@ -167,8 +273,6 @@ export default function LibraryPage() {
                       )}
                       <button
                         onClick={(e) => {
-                          e.preventDefault()
-                          e.stopPropagation()
                           setThreadToDelete(t.id)
                         }}
                         className="text-[11px] text-red-400 hover:text-red-300"
@@ -177,7 +281,7 @@ export default function LibraryPage() {
                       </button>
                     </div>
                   </div>
-                </Link>
+                </div>
               )
             })}
           </div>
@@ -194,6 +298,18 @@ export default function LibraryPage() {
         onConfirm={() => {
           if (!threadToDelete) return
           void handleDelete(threadToDelete).then(() => setThreadToDelete(null))
+        }}
+      />
+      <ConfirmDialog
+        open={bulkDeleteOpen}
+        title={`Delete ${selectedCount} selected asset${selectedCount === 1 ? '' : 's'}?`}
+        description="This action cannot be undone."
+        confirmLabel="Delete selected"
+        tone="danger"
+        busy={deleting}
+        onCancel={() => setBulkDeleteOpen(false)}
+        onConfirm={() => {
+          void handleBulkDelete(selectedIds).then(() => setBulkDeleteOpen(false))
         }}
       />
     </div>

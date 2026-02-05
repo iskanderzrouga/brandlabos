@@ -24,6 +24,7 @@ This repo includes `netlify.toml` and uses `@netlify/plugin-nextjs`.
    - `NETLIFY_DATABASE_URL`
    - `AUTH_SECRET`
    - `ANTHROPIC_API_KEY`
+   - `ANTHROPIC_AGENT_MODEL` (optional)
    - `R2_ENDPOINT`
    - `R2_ACCESS_KEY_ID`
    - `R2_SECRET_ACCESS_KEY`

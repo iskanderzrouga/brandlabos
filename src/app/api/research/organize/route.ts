@@ -27,15 +27,12 @@ async function loadGlobalPromptBlocks(): Promise<Map<string, PromptBlockRow>> {
     FROM prompt_blocks
     WHERE is_active = true
       AND scope = 'global'
-    ORDER BY updated_at DESC NULLS LAST, version DESC, created_at DESC
   ` as PromptBlockRow[]
 
   const map = new Map<string, PromptBlockRow>()
   for (const b of blocks || []) {
     const key = (b.metadata as { key?: string } | undefined)?.key || b.type
-    if (!map.has(key)) {
-      map.set(key, b)
-    }
+    map.set(key, b)
   }
   return map
 }

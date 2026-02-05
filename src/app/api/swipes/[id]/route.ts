@@ -13,22 +13,9 @@ export async function GET(request: NextRequest, context: { params: Promise<{ id:
 
   try {
     const rows = await sql`
-      SELECT
-        swipes.*,
-        mj.id AS job_id,
-        mj.status AS job_status,
-        mj.error_message AS job_error_message,
-        mj.updated_at AS job_updated_at,
-        mj.attempts AS job_attempts
+      SELECT *
       FROM swipes
-      LEFT JOIN LATERAL (
-        SELECT id, status, error_message, updated_at, attempts
-        FROM media_jobs
-        WHERE input->>'swipe_id' = swipes.id::text
-        ORDER BY created_at DESC
-        LIMIT 1
-      ) mj ON true
-      WHERE swipes.id = ${id}
+      WHERE id = ${id}
       LIMIT 1
     `
     const swipe = rows[0]

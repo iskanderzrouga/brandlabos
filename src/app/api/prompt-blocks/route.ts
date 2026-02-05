@@ -14,7 +14,7 @@ export async function GET(request: NextRequest) {
     let rows = await sql`
       SELECT *
       FROM prompt_blocks
-      ORDER BY updated_at DESC NULLS LAST, version DESC, created_at DESC
+      ORDER BY type ASC, version DESC
     `
 
     if (type) {
@@ -29,34 +29,8 @@ export async function GET(request: NextRequest) {
       rows = rows.filter((row: any) => row.scope_id === scopeId)
     }
 
-    const getLogicalKey = (row: any) => {
-      let metadata: any = row?.metadata
-      if (typeof metadata === 'string') {
-        try {
-          metadata = JSON.parse(metadata)
-        } catch {
-          metadata = null
-        }
-      }
-      const metadataKey =
-        metadata && typeof metadata === 'object' && typeof metadata.key === 'string'
-          ? metadata.key.trim()
-          : ''
-      return metadataKey || String(row?.type || '')
-    }
-
     if (activeOnly) {
-      const seen = new Set<string>()
-      const deduped: any[] = []
-      for (const row of rows as any[]) {
-        if (!row?.is_active) continue
-        const logicalKey = getLogicalKey(row)
-        const scopeBucket = `${row?.scope || ''}:${row?.scope_id || ''}:${logicalKey}`
-        if (seen.has(scopeBucket)) continue
-        seen.add(scopeBucket)
-        deduped.push(row)
-      }
-      rows = deduped
+      rows = rows.filter((row: any) => row.is_active)
     }
 
     return NextResponse.json(rows)

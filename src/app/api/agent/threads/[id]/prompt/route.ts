@@ -1,34 +1,128 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
 import { requireAuth } from '@/lib/require-auth'
-import {
-  AGENT_CONTEXT_DEFAULTS,
-  buildAgentContextMessages,
-  buildSystemPrompt,
-  loadGlobalPromptBlocks,
-  type ThreadContext,
-} from '@/lib/agent/compiled-context'
+import { DEFAULT_PROMPT_BLOCKS } from '@/lib/prompt-defaults'
 
-function positiveIntFromEnv(name: string, fallback: number): number {
-  const raw = process.env[name]
-  if (!raw) return fallback
-  const value = Number(raw)
-  if (!Number.isFinite(value) || value <= 0) return fallback
-  return Math.floor(value)
+type ThreadContext = {
+  skill?: string
+  versions?: number
+  avatar_ids?: string[]
+  positioning_id?: string | null
+  active_swipe_id?: string | null
+  research_ids?: string[]
 }
 
-const CONTEXT_MAX_MESSAGES = AGENT_CONTEXT_DEFAULTS.maxMessages
-const CONTEXT_MAX_CHARS = AGENT_CONTEXT_DEFAULTS.maxChars
-const CONTEXT_MAX_CHARS_PER_MESSAGE = AGENT_CONTEXT_DEFAULTS.maxCharsPerMessage
-const AGENT_HISTORY_LIMIT = positiveIntFromEnv('AGENT_HISTORY_LIMIT', 40)
+type PromptBlockRow = {
+  id: string
+  type: string
+  content: string
+  metadata?: { key?: string }
+}
 
-export async function GET(request: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+async function loadGlobalPromptBlocks(): Promise<Map<string, PromptBlockRow>> {
+  const blocks = await sql`
+    SELECT id, type, content, metadata
+    FROM prompt_blocks
+    WHERE is_active = true
+      AND scope = 'global'
+    ORDER BY updated_at ASC, created_at ASC
+  ` as PromptBlockRow[]
+
+  const map = new Map<string, PromptBlockRow>()
+  for (const b of blocks || []) {
+    const key = (b.metadata as { key?: string } | undefined)?.key || b.type
+    map.set(key, b)
+  }
+  return map
+}
+
+function getPromptBlockContent(blocks: Map<string, PromptBlockRow>, key: string): string {
+  const db = blocks.get(key)?.content
+  if (db) return db
+  const fallback = (DEFAULT_PROMPT_BLOCKS as any)[key]?.content
+  return typeof fallback === 'string' ? fallback : ''
+}
+
+function buildSystemPrompt(args: {
+  skill: string
+  versions: number
+  product: { name: string; content: string; brandName?: string | null; brandVoice?: string | null }
+  avatars: Array<{ id: string; name: string; content: string }>
+  positioning?: { name: string; content: string } | null
+  swipe?: { id: string; status: string; title?: string | null; summary?: string | null; transcript?: string | null; source_url?: string | null } | null
+  research?: Array<{ id: string; title?: string | null; summary?: string | null; content?: string | null }>
+  blocks: Map<string, PromptBlockRow>
+}) {
+  const {
+    skill,
+    versions,
+    product,
+    avatars,
+    positioning,
+    swipe,
+    blocks,
+  } = args
+
+  const writingRules = getPromptBlockContent(blocks, 'writing_rules')
+  const skillGuidance = getPromptBlockContent(blocks, skill)
+  const agentSystemTemplate = getPromptBlockContent(blocks, 'agent_system')
+  const agentSystem = agentSystemTemplate.replace(/{{\s*versions\s*}}/gi, () => String(versions))
+
+  const sections: string[] = []
+
+  if (agentSystem.trim()) sections.push(agentSystem)
+
+  sections.push(`## CURRENT SKILL\n${skill}`)
+  if (skillGuidance) sections.push(`## SKILL GUIDANCE\n${skillGuidance}`)
+  if (writingRules) sections.push(`## WRITING RULES\n${writingRules}`)
+
+  sections.push(`## PRODUCT\nName: ${product.name}\n\nContext:\n${product.content || '(none)'}\n`)
+  if (product.brandName || product.brandVoice) {
+    sections.push(`## BRAND\nName: ${product.brandName || '(unknown)'}\n\nVoice guidelines:\n${product.brandVoice || '(none)'}`)
+  }
+
+  if (positioning) {
+    sections.push(`## POSITIONING\n${positioning.name}\n\n${positioning.content}`)
+  }
+
+  if (avatars.length > 0) {
+    const lines: string[] = []
+    lines.push(`## AVATARS (${avatars.length})`)
+    for (const a of avatars) {
+      lines.push(`\n### ${a.name}\n${a.content}`)
+    }
+    sections.push(lines.join('\n'))
+  } else {
+    sections.push(`## AVATARS\n(none selected)`)
+  }
+
+  if (swipe) {
+    const transcript =
+      swipe.status === 'ready' && swipe.transcript
+        ? swipe.transcript.slice(0, 7000)
+        : null
+    sections.push(`## ACTIVE SWIPE\nStatus: ${swipe.status}\nURL: ${swipe.source_url || ''}\nTitle: ${swipe.title || ''}\nSummary: ${swipe.summary || ''}\n\nTranscript:\n${transcript || '(not ready yet)'}\n`)
+  }
+
+  if (args.research && args.research.length > 0) {
+    const lines: string[] = []
+    lines.push(`## RESEARCH CONTEXT (${args.research.length})`)
+    for (const item of args.research) {
+      const excerpt = item.content ? item.content.slice(0, 1200) : ''
+      lines.push(`\n### ${item.title || 'Untitled research'}\n${item.summary || ''}\n${excerpt ? `\nExcerpt:\n${excerpt}` : ''}`.trim())
+    }
+    sections.push(lines.join('\n'))
+  }
+
+  return sections.join('\n\n---\n\n')
+}
+
+export async function GET(_request: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const user = await requireAuth()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const { id: threadId } = await ctx.params
   if (!threadId) return NextResponse.json({ error: 'Thread not found' }, { status: 404 })
-  const includeDebug = request.nextUrl.searchParams.get('debug') === '1'
 
   const threadRows = await sql`
     SELECT *
@@ -113,7 +207,7 @@ export async function GET(request: NextRequest, ctx: { params: Promise<{ id: str
   }
 
   const blocks = await loadGlobalPromptBlocks()
-  const systemBuild = buildSystemPrompt({
+  const system = buildSystemPrompt({
     skill,
     versions,
     product: {
@@ -128,41 +222,6 @@ export async function GET(request: NextRequest, ctx: { params: Promise<{ id: str
     research,
     blocks,
   })
-  const system = systemBuild.prompt
 
-  const payload: any = { prompt: system }
-
-  if (includeDebug) {
-    const historyRows = await sql`
-      SELECT role, content
-      FROM agent_messages
-      WHERE thread_id = ${threadId}
-      ORDER BY created_at DESC
-      LIMIT ${AGENT_HISTORY_LIMIT}
-    `
-    const contextWindow = buildAgentContextMessages(
-      (historyRows as Array<{ role: string; content: string }>).reverse(),
-      {
-        maxMessages: CONTEXT_MAX_MESSAGES,
-        maxChars: CONTEXT_MAX_CHARS,
-        maxCharsPerMessage: CONTEXT_MAX_CHARS_PER_MESSAGE,
-      }
-    )
-
-    payload.debug = {
-      thread_context: threadContext,
-      prompt_blocks: systemBuild.promptBlocks,
-      prompt_sections: systemBuild.sections,
-      context_window: contextWindow.debug,
-      context_messages: contextWindow.messages,
-      runtime_limits: {
-        history_limit: AGENT_HISTORY_LIMIT,
-        context_max_messages: CONTEXT_MAX_MESSAGES,
-        context_max_chars: CONTEXT_MAX_CHARS,
-        context_max_chars_per_message: CONTEXT_MAX_CHARS_PER_MESSAGE,
-      },
-    }
-  }
-
-  return NextResponse.json(payload)
+  return NextResponse.json({ prompt: system })
 }

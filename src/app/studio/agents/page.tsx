@@ -111,24 +111,6 @@ const AGENTS: AgentConfig[] = [
       },
     ],
   },
-  {
-    id: 'research-synthesis',
-    label: 'Research Synthesizer',
-    description: 'Turns research libraries into avatars, angles, quotes, and awareness insights.',
-    blocks: [
-      {
-        key: 'research_synthesis_system',
-        label: 'System Prompt',
-        description: 'Controls extraction quality and strict JSON behavior.',
-      },
-      {
-        key: 'research_synthesis_prompt',
-        label: 'User Prompt',
-        description: 'Template for extraction flags and research items.',
-        helper: 'Tokens: {{extract}}, {{items}}',
-      },
-    ],
-  },
 ]
 
 const ALL_KEYS = AGENTS.flatMap((agent) => agent.blocks.map((b) => b.key))
@@ -142,7 +124,6 @@ export default function AgentsPage() {
   const [loading, setLoading] = useState(true)
   const [activeAgentId, setActiveAgentId] = useState(AGENTS[0].id)
   const [drafts, setDrafts] = useState<Record<string, string>>({})
-  const [dirtyKeys, setDirtyKeys] = useState<Record<string, boolean>>({})
   const [saving, setSaving] = useState<Record<string, boolean>>({})
   const [messages, setMessages] = useState<Record<string, string | null>>({})
 
@@ -176,13 +157,14 @@ export default function AgentsPage() {
     setDrafts((prev) => {
       const next = { ...prev }
       for (const key of ALL_KEYS) {
-        if (dirtyKeys[key]) continue
-        const block = getBlockForKey(key)
-        next[key] = block?.content || getDefaultContent(key)
+        if (next[key] === undefined) {
+          const block = getBlockForKey(key)
+          next[key] = block?.content || getDefaultContent(key)
+        }
       }
       return next
     })
-  }, [blocks, dirtyKeys])
+  }, [blocks])
 
   async function saveBlock(key: string) {
     const content = drafts[key] || ''
@@ -216,7 +198,6 @@ export default function AgentsPage() {
         const data = await res.json()
         if (!res.ok) throw new Error(data?.error || 'Failed to create')
       }
-      setDirtyKeys((prev) => ({ ...prev, [key]: false }))
       await loadBlocks()
       setMessages((prev) => ({ ...prev, [key]: 'Saved.' }))
     } catch (err) {
@@ -236,7 +217,6 @@ export default function AgentsPage() {
       const data = await res.json()
       if (!res.ok) throw new Error(data?.error || 'Failed to reset')
       await loadBlocks()
-      setDirtyKeys((prev) => ({ ...prev, [key]: false }))
       setDrafts((prev) => ({ ...prev, [key]: getDefaultContent(key) }))
       setMessages((prev) => ({ ...prev, [key]: 'Reset to default.' }))
     } catch (err) {
@@ -327,10 +307,9 @@ export default function AgentsPage() {
 
                   <textarea
                     value={drafts[block.key] || ''}
-                    onChange={(e) => {
+                    onChange={(e) =>
                       setDrafts((prev) => ({ ...prev, [block.key]: e.target.value }))
-                      setDirtyKeys((prev) => ({ ...prev, [block.key]: true }))
-                    }}
+                    }
                     rows={12}
                     className="editor-input w-full text-sm resize-none mt-4"
                   />

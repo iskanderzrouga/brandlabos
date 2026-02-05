@@ -4,8 +4,6 @@ import { promptAssembler } from '@/lib/services/prompt-assembler'
 import { sql } from '@/lib/db'
 import { getOrgApiKey } from '@/lib/api-keys'
 
-const AGENT_MODEL = 'claude-opus-4-6'
-
 interface GenerateRequest {
   product_id: string
   avatar_ids: string[]
@@ -82,7 +80,7 @@ export async function POST(request: NextRequest) {
 
     // Call Claude
     const message = await anthropic.messages.create({
-      model: AGENT_MODEL,
+      model: process.env.ANTHROPIC_AGENT_MODEL || 'claude-opus-4-6',
       max_tokens: 4096,
       messages: [
         {

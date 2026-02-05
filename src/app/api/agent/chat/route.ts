@@ -5,6 +5,8 @@ import { requireAuth } from '@/lib/require-auth'
 import { DEFAULT_PROMPT_BLOCKS } from '@/lib/prompt-defaults'
 import { getOrgApiKey } from '@/lib/api-keys'
 
+export const maxDuration = 120
+
 type ThreadContext = {
   skill?: string
   versions?: number
@@ -27,6 +29,29 @@ type ToolUseBlock = {
   name: string
   input: unknown
 }
+
+function positiveIntFromEnv(name: string, fallback: number): number {
+  const raw = process.env[name]
+  if (!raw) return fallback
+  const value = Number(raw)
+  if (!Number.isFinite(value) || value <= 0) return fallback
+  return Math.floor(value)
+}
+
+function nonNegativeIntFromEnv(name: string, fallback: number): number {
+  const raw = process.env[name]
+  if (!raw) return fallback
+  const value = Number(raw)
+  if (!Number.isFinite(value) || value < 0) return fallback
+  return Math.floor(value)
+}
+
+const AGENT_MAX_STEPS = positiveIntFromEnv('AGENT_MAX_STEPS', 2)
+const AGENT_MAX_TOKENS = positiveIntFromEnv('AGENT_MAX_TOKENS', 1400)
+const AGENT_LOOP_BUDGET_MS = positiveIntFromEnv('AGENT_LOOP_BUDGET_MS', 25_000)
+const AGENT_HISTORY_LIMIT = positiveIntFromEnv('AGENT_HISTORY_LIMIT', 40)
+const ANTHROPIC_TIMEOUT_MS = positiveIntFromEnv('ANTHROPIC_TIMEOUT_MS', 20_000)
+const ANTHROPIC_MAX_RETRIES = nonNegativeIntFromEnv('ANTHROPIC_MAX_RETRIES', 0)
 
 function isToolUseBlock(block: unknown): block is ToolUseBlock {
   return (
@@ -159,6 +184,23 @@ function deriveThreadTitle(message: string) {
   const sentence = clean.split(/[.!?\n]/)[0]
   const clipped = sentence.length > 80 ? sentence.slice(0, 80).trim() : sentence
   return clipped || null
+}
+
+function shouldEnableTools(messageText: string, threadContext: ThreadContext) {
+  if (threadContext.active_swipe_id) return true
+  if (Array.isArray(threadContext.research_ids) && threadContext.research_ids.length > 0) return true
+  const text = messageText.toLowerCase()
+  if (text.includes('facebook.com/ads/library')) return true
+
+  return (
+    text.includes('ingest meta') ||
+    text.includes('ad library') ||
+    text.includes('list swipes') ||
+    text.includes('get swipe') ||
+    text.includes('show swipe') ||
+    text.includes('transcript') ||
+    text.includes('ingest')
+  )
 }
 
 async function ingestMetaSwipe(args: { productId: string; url: string; userId: string }) {
@@ -376,7 +418,7 @@ export async function POST(request: NextRequest) {
       FROM agent_messages
       WHERE thread_id = ${threadId}
       ORDER BY created_at ASC
-      LIMIT 40
+      LIMIT ${AGENT_HISTORY_LIMIT}
     `
 
     // Convert persisted messages to Anthropic messages
@@ -391,7 +433,11 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'ANTHROPIC_API_KEY is not set' }, { status: 500 })
     }
 
-    const anthropic = new Anthropic({ apiKey: anthropicKey })
+    const anthropic = new Anthropic({
+      apiKey: anthropicKey,
+      timeout: ANTHROPIC_TIMEOUT_MS,
+      maxRetries: ANTHROPIC_MAX_RETRIES,
+    })
 
     const model = 'claude-opus-4-6'
 
@@ -514,18 +560,24 @@ export async function POST(request: NextRequest) {
       return { error: `Unknown tool: ${toolUse.name}` }
     }
 
+    const activeTools = shouldEnableTools(messageText, threadContext) ? tools : undefined
+    const loopStartedAt = Date.now()
     // Agent loop with tool calling.
-    const maxSteps = 6
+    const maxSteps = activeTools ? AGENT_MAX_STEPS : 1
     let assistantText = ''
     let workingMessages: any[] = messages
 
     for (let step = 0; step < maxSteps; step += 1) {
+      if (Date.now() - loopStartedAt > AGENT_LOOP_BUDGET_MS) {
+        console.warn('Agent loop budget exceeded', { threadId, step, model })
+        break
+      }
       const resp = await anthropic.messages.create({
         model,
-        max_tokens: 2200,
+        max_tokens: AGENT_MAX_TOKENS,
         system,
         messages: workingMessages,
-        tools,
+        ...(activeTools ? { tools: activeTools } : {}),
       })
 
       const content = resp.content || []
@@ -541,7 +593,7 @@ export async function POST(request: NextRequest) {
       // call has the proper tool_use ids in context.
       workingMessages = workingMessages.concat([{ role: 'assistant', content }])
 
-      if (toolUses.length === 0) break
+      if (!activeTools || toolUses.length === 0) break
 
       for (const tu of toolUses) {
         const result = await runTool(tu)

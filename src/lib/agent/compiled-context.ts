@@ -75,10 +75,18 @@ export type AgentContextWindow = {
   debug: AgentContextWindowDebug
 }
 
+function positiveIntFromEnv(name: string, fallback: number): number {
+  const raw = process.env[name]
+  if (!raw) return fallback
+  const value = Number(raw)
+  if (!Number.isFinite(value) || value <= 0) return fallback
+  return Math.floor(value)
+}
+
 export const AGENT_CONTEXT_DEFAULTS = {
-  maxMessages: 14,
-  maxChars: 24_000,
-  maxCharsPerMessage: 6_000,
+  maxMessages: positiveIntFromEnv('AGENT_CONTEXT_MAX_MESSAGES', 60),
+  maxChars: positiveIntFromEnv('AGENT_CONTEXT_MAX_CHARS', 220_000),
+  maxCharsPerMessage: positiveIntFromEnv('AGENT_CONTEXT_MAX_CHARS_PER_MESSAGE', 32_000),
   previewChars: 220,
 }
 

@@ -11,7 +11,7 @@ import {
   loadGlobalPromptBlocks,
   type ThreadContext,
 } from '@/lib/agent/compiled-context'
-export const maxDuration = 30
+export const maxDuration = 60
 
 type ToolUseBlock = {
   type: 'tool_use'
@@ -20,17 +20,22 @@ type ToolUseBlock = {
   input: unknown
 }
 
+function positiveIntFromEnv(name: string, fallback: number): number {
+  const raw = process.env[name]
+  if (!raw) return fallback
+  const value = Number(raw)
+  if (!Number.isFinite(value) || value <= 0) return fallback
+  return Math.floor(value)
+}
+
 const AGENT_MODEL = 'claude-opus-4-6'
 const CONTEXT_MAX_MESSAGES = AGENT_CONTEXT_DEFAULTS.maxMessages
 const CONTEXT_MAX_CHARS = AGENT_CONTEXT_DEFAULTS.maxChars
 const CONTEXT_MAX_CHARS_PER_MESSAGE = AGENT_CONTEXT_DEFAULTS.maxCharsPerMessage
 const AGENT_MAX_STEPS = 2
-const AGENT_MAX_TOKENS = 1000
-const AGENT_CALL_TIMEOUT_MS = 9000
-const LARGE_INPUT_CHARS = 3500
-const VERY_LARGE_INPUT_CHARS = 6500
-const LARGE_SYSTEM_CHARS = 12_000
-const VERY_LARGE_SYSTEM_CHARS = 18_000
+const AGENT_MAX_TOKENS = positiveIntFromEnv('AGENT_MAX_TOKENS', 1600)
+const AGENT_CALL_TIMEOUT_MS = positiveIntFromEnv('AGENT_CALL_TIMEOUT_MS', 25_000)
+const AGENT_HISTORY_LIMIT = positiveIntFromEnv('AGENT_HISTORY_LIMIT', 200)
 
 function isToolUseBlock(block: unknown): block is ToolUseBlock {
   return (
@@ -82,35 +87,6 @@ function shouldEnableTools(messageText: string, threadContext: ThreadContext) {
     text.includes('transcript') ||
     text.includes('ingest')
   )
-}
-
-function deriveContextLimits(args: { messageChars: number; systemChars: number }) {
-  const { messageChars, systemChars } = args
-
-  if (messageChars >= VERY_LARGE_INPUT_CHARS || systemChars >= VERY_LARGE_SYSTEM_CHARS) {
-    return {
-      mode: 'aggressive',
-      maxMessages: 8,
-      maxChars: 10_000,
-      maxCharsPerMessage: 5_000,
-    } as const
-  }
-
-  if (messageChars >= LARGE_INPUT_CHARS || systemChars >= LARGE_SYSTEM_CHARS) {
-    return {
-      mode: 'balanced',
-      maxMessages: 10,
-      maxChars: 14_000,
-      maxCharsPerMessage: 6_000,
-    } as const
-  }
-
-  return {
-    mode: 'default',
-    maxMessages: CONTEXT_MAX_MESSAGES,
-    maxChars: CONTEXT_MAX_CHARS,
-    maxCharsPerMessage: CONTEXT_MAX_CHARS_PER_MESSAGE,
-  } as const
 }
 
 function isPromptTooLargeError(error: APIError) {
@@ -335,26 +311,22 @@ export async function POST(request: NextRequest) {
       blocks,
     })
     const system = systemBuild.prompt
-    const contextLimits = deriveContextLimits({
-      messageChars: messageText.length,
-      systemChars: system.length,
-    })
 
     const historyRows = await sql`
       SELECT role, content
       FROM agent_messages
       WHERE thread_id = ${threadId}
       ORDER BY created_at DESC
-      LIMIT 80
+      LIMIT ${AGENT_HISTORY_LIMIT}
     `
 
     // Context is thread-scoped, but we keep only a lean recent window to avoid token waste.
     const contextWindow = buildAgentContextMessages(
       (historyRows as Array<{ role: string; content: string }>).reverse(),
       {
-        maxMessages: contextLimits.maxMessages,
-        maxChars: contextLimits.maxChars,
-        maxCharsPerMessage: contextLimits.maxCharsPerMessage,
+        maxMessages: CONTEXT_MAX_MESSAGES,
+        maxChars: CONTEXT_MAX_CHARS,
+        maxCharsPerMessage: CONTEXT_MAX_CHARS_PER_MESSAGE,
       }
     )
     const messages: any[] = contextWindow.messages
@@ -574,10 +546,10 @@ export async function POST(request: NextRequest) {
         context_messages: contextWindow.messages,
         request_message_chars: messageText.length,
         runtime_limits: {
-          context_mode: contextLimits.mode,
-          context_max_messages: contextLimits.maxMessages,
-          context_max_chars: contextLimits.maxChars,
-          context_max_chars_per_message: contextLimits.maxCharsPerMessage,
+          history_limit: AGENT_HISTORY_LIMIT,
+          context_max_messages: CONTEXT_MAX_MESSAGES,
+          context_max_chars: CONTEXT_MAX_CHARS,
+          context_max_chars_per_message: CONTEXT_MAX_CHARS_PER_MESSAGE,
           max_steps: maxSteps,
           max_tokens: AGENT_MAX_TOKENS,
           call_timeout_ms: AGENT_CALL_TIMEOUT_MS,
@@ -594,7 +566,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         {
           error:
-            'Agent timed out while processing a large prompt. Try splitting the request or reducing thread context.',
+            'Agent timed out before the model finished. Increase server runtime budget or retry with fewer active attachments.',
           error_code: 'anthropic_timeout',
         },
         { status: 504 }
@@ -606,7 +578,7 @@ export async function POST(request: NextRequest) {
         return NextResponse.json(
           {
             error:
-              'Prompt payload is too large for a single request. Reduce message/context size or split the task.',
+              'Prompt payload exceeded request limits for this model call.',
             error_code: 'prompt_too_large',
           },
           { status: 413 }

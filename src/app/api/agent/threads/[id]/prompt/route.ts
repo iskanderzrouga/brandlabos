@@ -9,9 +9,18 @@ import {
   type ThreadContext,
 } from '@/lib/agent/compiled-context'
 
+function positiveIntFromEnv(name: string, fallback: number): number {
+  const raw = process.env[name]
+  if (!raw) return fallback
+  const value = Number(raw)
+  if (!Number.isFinite(value) || value <= 0) return fallback
+  return Math.floor(value)
+}
+
 const CONTEXT_MAX_MESSAGES = AGENT_CONTEXT_DEFAULTS.maxMessages
 const CONTEXT_MAX_CHARS = AGENT_CONTEXT_DEFAULTS.maxChars
 const CONTEXT_MAX_CHARS_PER_MESSAGE = AGENT_CONTEXT_DEFAULTS.maxCharsPerMessage
+const AGENT_HISTORY_LIMIT = positiveIntFromEnv('AGENT_HISTORY_LIMIT', 200)
 
 export async function GET(request: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const user = await requireAuth()
@@ -129,7 +138,7 @@ export async function GET(request: NextRequest, ctx: { params: Promise<{ id: str
       FROM agent_messages
       WHERE thread_id = ${threadId}
       ORDER BY created_at DESC
-      LIMIT 80
+      LIMIT ${AGENT_HISTORY_LIMIT}
     `
     const contextWindow = buildAgentContextMessages(
       (historyRows as Array<{ role: string; content: string }>).reverse(),
@@ -147,6 +156,7 @@ export async function GET(request: NextRequest, ctx: { params: Promise<{ id: str
       context_window: contextWindow.debug,
       context_messages: contextWindow.messages,
       runtime_limits: {
+        history_limit: AGENT_HISTORY_LIMIT,
         context_max_messages: CONTEXT_MAX_MESSAGES,
         context_max_chars: CONTEXT_MAX_CHARS,
         context_max_chars_per_message: CONTEXT_MAX_CHARS_PER_MESSAGE,

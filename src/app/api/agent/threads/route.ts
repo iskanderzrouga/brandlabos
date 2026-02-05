@@ -80,3 +80,42 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Failed to create thread' }, { status: 500 })
   }
 }
+
+export async function DELETE(request: NextRequest) {
+  const user = await requireAuth()
+  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  try {
+    const body = await request.json().catch(() => ({}))
+    const ids = Array.isArray(body?.ids)
+      ? body.ids
+          .map((id: unknown) => String(id || '').trim())
+          .filter(Boolean)
+      : []
+
+    if (ids.length === 0) {
+      return NextResponse.json({ error: 'ids array is required' }, { status: 400 })
+    }
+
+    const uniqueIds = Array.from(new Set(ids)).slice(0, 200)
+
+    const rows = await sql`
+      DELETE FROM agent_threads
+      WHERE user_id = ${user.id}
+        AND id = ANY(${uniqueIds})
+      RETURNING id
+    `
+
+    const deletedIds = rows.map((row: any) => String(row.id))
+
+    return NextResponse.json({
+      success: true,
+      requested: uniqueIds.length,
+      deleted: deletedIds.length,
+      deleted_ids: deletedIds,
+    })
+  } catch (error) {
+    console.error('Bulk delete threads error:', error)
+    return NextResponse.json({ error: 'Failed to delete threads' }, { status: 500 })
+  }
+}

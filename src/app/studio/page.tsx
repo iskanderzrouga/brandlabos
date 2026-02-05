@@ -353,6 +353,12 @@ async function readJsonFromResponse<T>(res: Response): Promise<T | null> {
   }
 }
 
+const TRANSIENT_CHAT_STATUSES = new Set([502, 503, 504])
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 export default function GeneratePage() {
   const { selectedProduct, openContextDrawer, setContextDrawerExtra, setTopBarExtra } = useAppContext()
 
@@ -1498,22 +1504,45 @@ export default function GeneratePage() {
           .catch(() => {})
       }
 
-      const res = await fetch('/api/agent/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ thread_id: threadId, message: fullMessage }),
-      })
-
-      const data = await readJsonFromResponse<{
+      let data: {
         error?: string
         assistant_message?: string
         thread_context?: ThreadContext
-      }>(res)
-      if (!res.ok) {
-        const fallback = data?.error
-          ? data.error
-          : `Agent chat failed (${res.status}).`
+      } | null = null
+      let lastStatus: number | null = null
+      let lastError: string | null = null
+
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const res = await fetch('/api/agent/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ thread_id: threadId, message: fullMessage }),
+        })
+
+        data = await readJsonFromResponse<{
+          error?: string
+          assistant_message?: string
+          thread_context?: ThreadContext
+        }>(res)
+
+        if (res.ok) {
+          lastStatus = res.status
+          break
+        }
+
+        lastStatus = res.status
+        lastError = data?.error || null
+        if (attempt === 0 && TRANSIENT_CHAT_STATUSES.has(res.status)) {
+          await sleep(350)
+          continue
+        }
+
+        const fallback = data?.error ? data.error : `Agent chat failed (${res.status}).`
         throw new Error(fallback)
+      }
+
+      if (lastStatus == null || lastStatus >= 400) {
+        throw new Error(lastError || 'Agent chat failed.')
       }
       if (!data?.assistant_message) {
         throw new Error('Agent returned an invalid response format.')

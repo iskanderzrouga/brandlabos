@@ -4,6 +4,7 @@ import { sql } from '@/lib/db'
 import { requireAuth } from '@/lib/require-auth'
 import { DEFAULT_PROMPT_BLOCKS } from '@/lib/prompt-defaults'
 import { getOrgApiKey } from '@/lib/api-keys'
+export const maxDuration = 30
 
 type ThreadContext = {
   skill?: string
@@ -31,9 +32,9 @@ type ToolUseBlock = {
 const AGENT_MODEL = 'claude-opus-4-6'
 const CONTEXT_MAX_MESSAGES = 14
 const CONTEXT_MAX_CHARS = 24000
-const AGENT_MAX_STEPS = 3
-const AGENT_MAX_TOKENS = 1400
-const AGENT_CALL_TIMEOUT_MS = 18000
+const AGENT_MAX_STEPS = 2
+const AGENT_MAX_TOKENS = 1000
+const AGENT_CALL_TIMEOUT_MS = 9000
 
 function isToolUseBlock(block: unknown): block is ToolUseBlock {
   return (
@@ -198,11 +199,14 @@ function shouldEnableTools(messageText: string, threadContext: ThreadContext) {
   if (threadContext.active_swipe_id) return true
   if (Array.isArray(threadContext.research_ids) && threadContext.research_ids.length > 0) return true
   const text = messageText.toLowerCase()
+  if (text.includes('facebook.com/ads/library')) return true
+
   return (
-    text.includes('facebook.com/ads/library') ||
-    text.includes('meta ad') ||
+    text.includes('ingest meta') ||
     text.includes('ad library') ||
-    text.includes('swipe') ||
+    text.includes('list swipes') ||
+    text.includes('get swipe') ||
+    text.includes('show swipe') ||
     text.includes('transcript') ||
     text.includes('ingest')
   )
@@ -439,7 +443,7 @@ export async function POST(request: NextRequest) {
     const anthropic = new Anthropic({
       apiKey: anthropicKey,
       timeout: AGENT_CALL_TIMEOUT_MS,
-      maxRetries: 1,
+      maxRetries: 0,
     })
 
     const model = AGENT_MODEL

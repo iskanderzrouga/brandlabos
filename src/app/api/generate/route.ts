@@ -80,7 +80,7 @@ export async function POST(request: NextRequest) {
 
     // Call Claude
     const message = await anthropic.messages.create({
-      model: 'claude-opus-4-5-20251101',
+      model: process.env.ANTHROPIC_AGENT_MODEL || 'claude-opus-4-6',
       max_tokens: 4096,
       messages: [
         {

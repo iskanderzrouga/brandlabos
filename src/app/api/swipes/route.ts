@@ -82,7 +82,7 @@ async function generateSwipeTitle(args: {
     excerpt,
   })
   const response = await anthropic.messages.create({
-    model: process.env.ANTHROPIC_AGENT_MODEL || 'claude-opus-4-5-20251101',
+    model: process.env.ANTHROPIC_AGENT_MODEL || 'claude-opus-4-6',
     max_tokens: 60,
     temperature: 0.2,
     system: system || undefined,

@@ -84,9 +84,9 @@ function positiveIntFromEnv(name: string, fallback: number): number {
 }
 
 export const AGENT_CONTEXT_DEFAULTS = {
-  maxMessages: positiveIntFromEnv('AGENT_CONTEXT_MAX_MESSAGES', 60),
-  maxChars: positiveIntFromEnv('AGENT_CONTEXT_MAX_CHARS', 220_000),
-  maxCharsPerMessage: positiveIntFromEnv('AGENT_CONTEXT_MAX_CHARS_PER_MESSAGE', 32_000),
+  maxMessages: positiveIntFromEnv('AGENT_CONTEXT_MAX_MESSAGES', 14),
+  maxChars: positiveIntFromEnv('AGENT_CONTEXT_MAX_CHARS', 24_000),
+  maxCharsPerMessage: positiveIntFromEnv('AGENT_CONTEXT_MAX_CHARS_PER_MESSAGE', 6_000),
   previewChars: 220,
 }
 

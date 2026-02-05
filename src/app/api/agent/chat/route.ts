@@ -41,12 +41,18 @@ const CONTEXT_MAX_MESSAGES = AGENT_CONTEXT_DEFAULTS.maxMessages
 const CONTEXT_MAX_CHARS = AGENT_CONTEXT_DEFAULTS.maxChars
 const CONTEXT_MAX_CHARS_PER_MESSAGE = AGENT_CONTEXT_DEFAULTS.maxCharsPerMessage
 const AGENT_MAX_STEPS = 2
-const AGENT_MAX_TOKENS = positiveIntFromEnv('AGENT_MAX_TOKENS', 1600)
-const AGENT_LOOP_BUDGET_MS = positiveIntFromEnv('AGENT_LOOP_BUDGET_MS', 55_000)
-const AGENT_HISTORY_LIMIT = positiveIntFromEnv('AGENT_HISTORY_LIMIT', 200)
+const AGENT_MAX_TOKENS = positiveIntFromEnv('AGENT_MAX_TOKENS', 1800)
+const AGENT_LOOP_BUDGET_MS = positiveIntFromEnv('AGENT_LOOP_BUDGET_MS', 25_000)
+const AGENT_HISTORY_LIMIT = positiveIntFromEnv('AGENT_HISTORY_LIMIT', 40)
 const ANTHROPIC_MAX_RETRIES = nonNegativeIntFromEnv('ANTHROPIC_MAX_RETRIES', 1)
+const ANTHROPIC_TIMEOUT_MS = positiveIntFromEnv('ANTHROPIC_TIMEOUT_MS', 90_000)
 const ANTHROPIC_ENABLE_CONTEXT_1M = String(process.env.ANTHROPIC_ENABLE_CONTEXT_1M ?? 'true').toLowerCase() !== 'false'
 const ANTHROPIC_CONTEXT_1M_BETA = String(process.env.ANTHROPIC_CONTEXT_1M_BETA || 'context-1m-2025-08-07')
+const LEGACY_1M_MIN_CHARS = positiveIntFromEnv('ANTHROPIC_CONTEXT_1M_MIN_INPUT_CHARS', 700_000)
+const ANTHROPIC_CONTEXT_1M_MIN_INPUT_TOKENS = positiveIntFromEnv(
+  'ANTHROPIC_CONTEXT_1M_MIN_INPUT_TOKENS',
+  Math.max(170_000, Math.floor(LEGACY_1M_MIN_CHARS / 4))
+)
 let context1MBetaAvailability: 'unknown' | 'enabled' | 'disabled' = 'unknown'
 
 function isToolUseBlock(block: unknown): block is ToolUseBlock {
@@ -124,6 +130,38 @@ function isContext1MBetaAccessError(error: APIError) {
   )
 }
 
+function estimateMessageChars(messages: any[]): number {
+  let total = 0
+  for (const message of messages || []) {
+    if (!message) continue
+    const content = (message as any).content
+    if (typeof content === 'string') {
+      total += content.length
+      continue
+    }
+    if (Array.isArray(content)) {
+      try {
+        total += JSON.stringify(content).length
+      } catch {
+        total += 0
+      }
+      continue
+    }
+    if (content != null) {
+      try {
+        total += JSON.stringify(content).length
+      } catch {
+        total += 0
+      }
+    }
+  }
+  return total
+}
+
+function estimateTokensFromChars(chars: number): number {
+  return Math.max(1, Math.ceil(chars / 4))
+}
+
 async function createAnthropicMessage(args: {
   anthropic: Anthropic
   model: string
@@ -131,6 +169,7 @@ async function createAnthropicMessage(args: {
   system: string
   messages: any[]
   tools?: any[]
+  estimatedInputTokens: number
 }) {
   const payload: any = {
     model: args.model,
@@ -140,7 +179,11 @@ async function createAnthropicMessage(args: {
     ...(args.tools ? { tools: args.tools } : {}),
   }
 
-  if (!ANTHROPIC_ENABLE_CONTEXT_1M || context1MBetaAvailability === 'disabled') {
+  if (
+    !ANTHROPIC_ENABLE_CONTEXT_1M ||
+    context1MBetaAvailability === 'disabled' ||
+    args.estimatedInputTokens < ANTHROPIC_CONTEXT_1M_MIN_INPUT_TOKENS
+  ) {
     return args.anthropic.messages.create(payload)
   }
 
@@ -400,6 +443,7 @@ export async function POST(request: NextRequest) {
     const anthropic = new Anthropic({
       apiKey: anthropicKey,
       maxRetries: ANTHROPIC_MAX_RETRIES,
+      timeout: ANTHROPIC_TIMEOUT_MS,
     })
 
     const model = AGENT_MODEL
@@ -538,6 +582,9 @@ export async function POST(request: NextRequest) {
         break
       }
 
+      const estimatedInputChars = system.length + estimateMessageChars(workingMessages)
+      const estimatedInputTokens = estimateTokensFromChars(estimatedInputChars)
+
       const resp = await createAnthropicMessage({
         anthropic,
         model,
@@ -545,6 +592,7 @@ export async function POST(request: NextRequest) {
         system,
         messages: workingMessages,
         ...(activeTools ? { tools: activeTools } : {}),
+        estimatedInputTokens,
       })
 
       const content = resp.content || []
@@ -615,8 +663,12 @@ export async function POST(request: NextRequest) {
           max_tokens: AGENT_MAX_TOKENS,
           loop_budget_ms: AGENT_LOOP_BUDGET_MS,
           anthropic_max_retries: ANTHROPIC_MAX_RETRIES,
+          anthropic_timeout_ms: ANTHROPIC_TIMEOUT_MS,
           context_1m_enabled: ANTHROPIC_ENABLE_CONTEXT_1M,
           context_1m_beta: ANTHROPIC_ENABLE_CONTEXT_1M ? ANTHROPIC_CONTEXT_1M_BETA : null,
+          context_1m_min_input_tokens: ANTHROPIC_CONTEXT_1M_MIN_INPUT_TOKENS,
+          context_1m_legacy_min_input_chars: LEGACY_1M_MIN_CHARS,
+          context_1m_runtime_state: context1MBetaAvailability,
         },
         tools_enabled: Boolean(activeTools),
       }

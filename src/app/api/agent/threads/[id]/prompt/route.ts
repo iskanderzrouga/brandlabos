@@ -20,7 +20,7 @@ function positiveIntFromEnv(name: string, fallback: number): number {
 const CONTEXT_MAX_MESSAGES = AGENT_CONTEXT_DEFAULTS.maxMessages
 const CONTEXT_MAX_CHARS = AGENT_CONTEXT_DEFAULTS.maxChars
 const CONTEXT_MAX_CHARS_PER_MESSAGE = AGENT_CONTEXT_DEFAULTS.maxCharsPerMessage
-const AGENT_HISTORY_LIMIT = positiveIntFromEnv('AGENT_HISTORY_LIMIT', 200)
+const AGENT_HISTORY_LIMIT = positiveIntFromEnv('AGENT_HISTORY_LIMIT', 40)
 
 export async function GET(request: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const user = await requireAuth()

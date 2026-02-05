@@ -385,7 +385,7 @@ async function readJsonFromResponse<T>(res: Response): Promise<T | null> {
   }
 }
 
-const TRANSIENT_CHAT_STATUSES = new Set([502, 503, 504])
+const TRANSIENT_CHAT_STATUSES = new Set([429, 502, 503, 504, 529])
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))

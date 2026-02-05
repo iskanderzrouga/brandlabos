@@ -263,6 +263,26 @@ Items:
 {{items}}`,
   },
 
+  swipe_namer_system: {
+    name: 'Swipe Namer System',
+    content:
+      'You generate short, descriptive swipe titles. Output ONLY a 3-5 word, lower-case, hyphen-separated slug. No punctuation besides hyphens.',
+  },
+
+  swipe_namer_prompt: {
+    name: 'Swipe Namer Prompt',
+    content: `Generate a 3-5 word slug for this swipe.
+Return ONLY the slug.
+
+Brand: {{brand}}
+Product: {{product}}
+Avatar: {{avatar}}
+Angle: {{angle}}
+
+Transcript excerpt:
+{{excerpt}}`,
+  },
+
   swipe_summarizer_system: {
     name: 'Swipe Summarizer System',
     content:

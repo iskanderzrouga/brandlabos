@@ -58,6 +58,24 @@ const AGENTS: AgentConfig[] = [
     ],
   },
   {
+    id: 'swipe-namer',
+    label: 'Swipe Namer',
+    description: 'Generates short hyphenated titles for manual swipes.',
+    blocks: [
+      {
+        key: 'swipe_namer_system',
+        label: 'System Prompt',
+        description: 'Forces 3-5 word slug output.',
+      },
+      {
+        key: 'swipe_namer_prompt',
+        label: 'User Prompt',
+        description: 'Template with brand + transcript excerpt.',
+        helper: 'Tokens: {{brand}}, {{product}}, {{avatar}}, {{angle}}, {{excerpt}}',
+      },
+    ],
+  },
+  {
     id: 'swipe',
     label: 'Swipe Summarizer',
     description: 'Summarizes Meta ad swipes into titles and summaries.',

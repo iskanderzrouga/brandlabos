@@ -4,6 +4,14 @@ import crypto from 'crypto'
 import { sql } from '@/lib/db'
 import { requireAuth } from '@/lib/require-auth'
 import { getOrgApiKey } from '@/lib/api-keys'
+import { DEFAULT_PROMPT_BLOCKS } from '@/lib/prompt-defaults'
+
+type PromptBlockRow = {
+  id: string
+  type: string
+  content: string
+  metadata?: { key?: string }
+}
 
 function normalizeSlug(value: string) {
   const cleaned = value
@@ -17,6 +25,36 @@ function normalizeSlug(value: string) {
   return trimmed.join('-').slice(0, 64)
 }
 
+async function loadGlobalPromptBlocks(): Promise<Map<string, PromptBlockRow>> {
+  const blocks = await sql`
+    SELECT id, type, content, metadata
+    FROM prompt_blocks
+    WHERE is_active = true
+      AND scope = 'global'
+  ` as PromptBlockRow[]
+
+  const map = new Map<string, PromptBlockRow>()
+  for (const b of blocks || []) {
+    const key = (b.metadata as { key?: string } | undefined)?.key || b.type
+    map.set(key, b)
+  }
+  return map
+}
+
+function getPromptBlockContent(blocks: Map<string, PromptBlockRow>, key: string): string {
+  const db = blocks.get(key)?.content
+  if (db) return db
+  const fallback = (DEFAULT_PROMPT_BLOCKS as any)[key]?.content
+  return typeof fallback === 'string' ? fallback : ''
+}
+
+function applyTemplate(template: string, vars: Record<string, string>) {
+  return template.replace(/{{\s*([a-z0-9_]+)\s*}}/gi, (_, key) => {
+    const val = vars[key.toLowerCase()] ?? ''
+    return val
+  })
+}
+
 async function generateSwipeTitle(args: {
   productName: string
   brandName?: string | null
@@ -24,19 +62,29 @@ async function generateSwipeTitle(args: {
   positioningName?: string | null
   transcript: string
   orgId?: string | null
+  blocks: Map<string, PromptBlockRow>
 }) {
-  const { productName, brandName, avatarName, positioningName, transcript, orgId } = args
-  const excerpt = transcript.slice(0, 280)
+  const { productName, brandName, avatarName, positioningName, transcript, orgId, blocks } = args
+  const excerpt = transcript.slice(0, 600)
   const key = await getOrgApiKey('anthropic', orgId || null)
   if (!key) {
     return normalizeSlug(excerpt || `${brandName || productName} swipe`)
   }
   const anthropic = new Anthropic({ apiKey: key })
-  const prompt = `Generate a 3-5 word, lower-case, hyphen-separated title for a marketing swipe.\nReturn ONLY the slug, no punctuation besides hyphens.\n\nBrand: ${brandName || '(none)'}\nProduct: ${productName}\nAvatar: ${avatarName || '(none)'}\nAngle: ${positioningName || '(none)'}\nTranscript excerpt: ${excerpt}`
+  const system = getPromptBlockContent(blocks, 'swipe_namer_system')
+  const template = getPromptBlockContent(blocks, 'swipe_namer_prompt')
+  const prompt = applyTemplate(template, {
+    brand: brandName || '',
+    product: productName,
+    avatar: avatarName || '',
+    angle: positioningName || '',
+    excerpt,
+  })
   const response = await anthropic.messages.create({
     model: process.env.ANTHROPIC_AGENT_MODEL || 'claude-opus-4-5-20251101',
     max_tokens: 60,
     temperature: 0.2,
+    system: system || undefined,
     messages: [{ role: 'user', content: prompt }],
   })
   const text = response.content
@@ -143,7 +191,9 @@ export async function POST(request: NextRequest) {
       positioningName = rows[0]?.name || null
     }
 
+    const blocks = await loadGlobalPromptBlocks()
     let title = titleInput
+    const autoNamed = !title
     if (!title) {
       title = await generateSwipeTitle({
         productName: product.name,
@@ -152,7 +202,25 @@ export async function POST(request: NextRequest) {
         positioningName,
         transcript,
         orgId: product.organization_id || null,
+        blocks,
       })
+    }
+
+    if (autoNamed) {
+      const base = title.slice(0, 58)
+      let candidate = title
+      for (let i = 2; i <= 6; i += 1) {
+        const rows = await sql`
+          SELECT 1
+          FROM swipes
+          WHERE product_id = ${productId}
+            AND title = ${candidate}
+          LIMIT 1
+        `
+        if (rows.length === 0) break
+        candidate = `${base}-${i}`
+      }
+      title = candidate
     }
 
     const manualId = crypto.randomUUID()

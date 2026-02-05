@@ -114,6 +114,14 @@ export default function SwipesPage() {
     }
   }
 
+  function openManualSwipe() {
+    setManualOpen(true)
+    setManualTitle('')
+    setManualText('')
+    setManualAvatarId('')
+    setManualPositioningId('')
+  }
+
   async function createManualSwipe() {
     if (!selectedProduct) return
     const transcript = manualText.trim()
@@ -204,7 +212,7 @@ export default function SwipesPage() {
               </button>
             </div>
             <button
-              onClick={() => setManualOpen((v) => !v)}
+              onClick={() => (manualOpen ? setManualOpen(false) : openManualSwipe())}
               className="editor-button-ghost text-xs"
             >
               {manualOpen ? 'Close Manual Swipe' : 'Add Manual Swipe'}

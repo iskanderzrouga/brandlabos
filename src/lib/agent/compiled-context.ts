@@ -334,7 +334,11 @@ export function buildAgentContextMessages(
     const originalChars = row.content.length
     let clipped = false
 
-    let clippedPerMessage = clipWithMarker(row.content, maxCharsPerMessage)
+    const isNewestMessage = reversedMessages.length === 0
+    const perMessageLimit = isNewestMessage && row.role === 'user'
+      ? Math.max(maxCharsPerMessage, originalChars)
+      : maxCharsPerMessage
+    let clippedPerMessage = clipWithMarker(row.content, perMessageLimit)
     let nextContent = clippedPerMessage.text
     if (clippedPerMessage.clipped) clipped = true
 

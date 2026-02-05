@@ -76,6 +76,49 @@ type PromptDebugTrace = {
   context_messages?: Array<{ role: 'user' | 'assistant'; content: string }>
 }
 
+type ChatRuntimeTrace = {
+  request_id?: string
+  model?: string
+  estimated_input_tokens?: number
+  context_1m_used?: boolean
+  tool_steps?: number
+  model_call_count?: number
+  anthropic_request_ids?: string[]
+  timings_ms?: {
+    data_load_ms?: number
+    prompt_compile_ms?: number
+    model_wait_ms?: number
+    total_ms?: number
+  }
+}
+
+type ChatResponsePayload = {
+  error?: string
+  error_code?: string
+  assistant_message?: string
+  thread_context?: ThreadContext
+  maybe_swipe_status?: { swipe_id: string; status: string } | null
+  request_id?: string
+  runtime?: ChatRuntimeTrace
+}
+
+type ChatStreamEvent =
+  | { event: 'meta'; request_id?: string; runtime?: ChatRuntimeTrace }
+  | { event: 'delta'; delta?: string }
+  | {
+      event: 'final'
+      request_id?: string
+      data?: ChatResponsePayload
+      runtime?: ChatRuntimeTrace
+    }
+  | {
+      event: 'error'
+      request_id?: string
+      status?: number
+      error?: string
+      error_code?: string
+    }
+
 function extractDraftBlock(text: string): string | null {
   const match = text.match(/```draft\s*([\s\S]*?)\s*```/i)
   if (!match) return null
@@ -385,6 +428,50 @@ async function readJsonFromResponse<T>(res: Response): Promise<T | null> {
   }
 }
 
+async function readNdjsonStream(
+  res: Response,
+  onEvent: (event: ChatStreamEvent) => void
+) {
+  if (!res.body) {
+    throw new Error('Agent stream was empty.')
+  }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+
+    while (true) {
+      const newlineIndex = buffer.indexOf('\n')
+      if (newlineIndex < 0) break
+      const line = buffer.slice(0, newlineIndex).trim()
+      buffer = buffer.slice(newlineIndex + 1)
+      if (!line) continue
+
+      try {
+        const event = JSON.parse(line) as ChatStreamEvent
+        onEvent(event)
+      } catch {
+        // Ignore malformed stream lines.
+      }
+    }
+  }
+
+  const trailing = buffer.trim()
+  if (trailing) {
+    try {
+      const event = JSON.parse(trailing) as ChatStreamEvent
+      onEvent(event)
+    } catch {
+      // Ignore malformed trailing line.
+    }
+  }
+}
+
 const TRANSIENT_CHAT_STATUSES = new Set([429, 502, 503, 504, 529])
 
 function sleep(ms: number) {
@@ -433,6 +520,8 @@ export default function GeneratePage() {
   const [historyVersion, setHistoryVersion] = useState(0)
   const [promptPreview, setPromptPreview] = useState<string | null>(null)
   const [promptDebug, setPromptDebug] = useState<PromptDebugTrace | null>(null)
+  const [lastChatRuntime, setLastChatRuntime] = useState<ChatRuntimeTrace | null>(null)
+  const [lastChatRequestId, setLastChatRequestId] = useState<string | null>(null)
   const [promptPreviewOpen, setPromptPreviewOpen] = useState(false)
   const [conversationOpen, setConversationOpen] = useState(false)
   const [feedback, setFeedback] = useState<{ tone: 'info' | 'success' | 'error'; message: string } | null>(null)
@@ -1542,41 +1631,171 @@ export default function GeneratePage() {
           .catch(() => {})
       }
 
-      let data: {
-        error?: string
-        assistant_message?: string
-        thread_context?: ThreadContext
-      } | null = null
+      let data: ChatResponsePayload | null = null
       let lastStatus: number | null = null
       let lastError: string | null = null
+      let streamedAssistantId: string | null = null
+      let streamedAssistantContent = ''
+      let streamedFinalSeen = false
 
       for (let attempt = 0; attempt < 2; attempt += 1) {
-        const res = await fetch('/api/agent/chat', {
+        const res = await fetch('/api/agent/chat?stream=1', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/x-ndjson, application/json',
+          },
           body: JSON.stringify({ thread_id: threadId, message: fullMessage }),
         })
 
-        data = await readJsonFromResponse<{
-          error?: string
-          assistant_message?: string
-          thread_context?: ThreadContext
-        }>(res)
+        const responseRequestId = res.headers.get('x-request-id')
+        if (responseRequestId) {
+          setLastChatRequestId(responseRequestId)
+        }
 
-        if (res.ok) {
+        if (!res.ok) {
+          data = await readJsonFromResponse<ChatResponsePayload>(res)
           lastStatus = res.status
-          break
+          lastError = data?.error || null
+          if (attempt === 0 && TRANSIENT_CHAT_STATUSES.has(res.status)) {
+            await sleep(350)
+            continue
+          }
+
+          const fallback = data?.error ? data.error : `Agent chat failed (${res.status}).`
+          throw new Error(fallback)
         }
 
         lastStatus = res.status
-        lastError = data?.error || null
-        if (attempt === 0 && TRANSIENT_CHAT_STATUSES.has(res.status)) {
+        const contentType = (res.headers.get('content-type') || '').toLowerCase()
+        const isNdjson = contentType.includes('application/x-ndjson')
+
+        if (isNdjson && res.body) {
+          streamedAssistantId = `stream-assistant-${Date.now()}-${attempt}`
+          streamedAssistantContent = ''
+          streamedFinalSeen = false
+          let receivedAnyDelta = false
+          let receivedErrorEvent = false
+
+          setMessages((prev) => [
+            ...prev,
+            { id: streamedAssistantId as string, role: 'assistant', content: '' },
+          ])
+
+          try {
+            await readNdjsonStream(res, (event) => {
+              if (event.event === 'meta') {
+                if (event.request_id) {
+                  setLastChatRequestId(event.request_id)
+                }
+                if (event.runtime) {
+                  setLastChatRuntime(event.runtime)
+                }
+                return
+              }
+
+              if (event.event === 'delta') {
+                const delta = typeof event.delta === 'string' ? event.delta : ''
+                if (!delta || !streamedAssistantId) return
+                receivedAnyDelta = true
+                streamedAssistantContent += delta
+                setMessages((prev) =>
+                  prev.map((message) =>
+                    message.id === streamedAssistantId
+                      ? { ...message, content: streamedAssistantContent }
+                      : message
+                  )
+                )
+                return
+              }
+
+              if (event.event === 'final') {
+                streamedFinalSeen = true
+                if (event.request_id) {
+                  setLastChatRequestId(event.request_id)
+                }
+                if (event.runtime) {
+                  setLastChatRuntime(event.runtime)
+                }
+                if (event.data) {
+                  data = event.data
+                  if (event.data.runtime) {
+                    setLastChatRuntime(event.data.runtime)
+                  }
+                  if (event.data.request_id) {
+                    setLastChatRequestId(event.data.request_id)
+                  }
+                }
+                const finalAssistant = data?.assistant_message || streamedAssistantContent || ''
+                streamedAssistantContent = finalAssistant
+                if (streamedAssistantId) {
+                  setMessages((prev) =>
+                    prev.map((message) =>
+                      message.id === streamedAssistantId
+                        ? { ...message, content: finalAssistant }
+                        : message
+                    )
+                  )
+                }
+                return
+              }
+
+              if (event.event === 'error') {
+                receivedErrorEvent = true
+                if (event.request_id) {
+                  setLastChatRequestId(event.request_id)
+                }
+                const errorMessage =
+                  event.error ||
+                  (event.status ? `Agent chat failed (${event.status}).` : 'Agent chat failed.')
+                throw new Error(errorMessage)
+              }
+            })
+          } catch (error) {
+            if (streamedAssistantId) {
+              setMessages((prev) => prev.filter((message) => message.id !== streamedAssistantId))
+            }
+            if (attempt === 0 && !receivedAnyDelta && !receivedErrorEvent) {
+              await sleep(350)
+              streamedAssistantId = null
+              streamedAssistantContent = ''
+              continue
+            }
+            throw error
+          }
+
+          if (!streamedFinalSeen || !data?.assistant_message) {
+            if (streamedAssistantId) {
+              setMessages((prev) => prev.filter((message) => message.id !== streamedAssistantId))
+            }
+            if (attempt === 0 && !receivedAnyDelta) {
+              await sleep(350)
+              streamedAssistantId = null
+              streamedAssistantContent = ''
+              continue
+            }
+            throw new Error('Agent stream ended before the final response.')
+          }
+
+          break
+        }
+
+        data = await readJsonFromResponse<ChatResponsePayload>(res)
+        if (data?.runtime) {
+          setLastChatRuntime(data.runtime)
+        }
+        if (data?.request_id) {
+          setLastChatRequestId(data.request_id)
+        }
+        if (data?.assistant_message) {
+          break
+        }
+
+        if (attempt === 0) {
           await sleep(350)
           continue
         }
-
-        const fallback = data?.error ? data.error : `Agent chat failed (${res.status}).`
-        throw new Error(fallback)
+        throw new Error('Agent returned an invalid response format.')
       }
 
       if (lastStatus == null || lastStatus >= 400) {
@@ -1585,16 +1804,27 @@ export default function GeneratePage() {
       if (!data?.assistant_message) {
         throw new Error('Agent returned an invalid response format.')
       }
+      const finalData = data
 
-      const assistantMessage = data.assistant_message
+      const assistantMessage = String(finalData.assistant_message || '')
       const draft = extractDraftBlock(assistantMessage)
       const canvasEmpty = canvasRef.current.every((t) => !t.trim())
       const shouldAutoApply = pendingAutoApplyRef.current
       pendingAutoApplyRef.current = false
       setPendingAutoApply(false)
 
-      setThreadContext((prev) => ({ ...prev, ...(data.thread_context || {}) }))
-      setMessages((prev) => [...prev, { role: 'assistant', content: assistantMessage }])
+      setThreadContext((prev) => ({ ...prev, ...(finalData.thread_context || {}) }))
+      if (streamedAssistantId) {
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.id === streamedAssistantId
+              ? { ...message, content: assistantMessage }
+              : message
+          )
+        )
+      } else {
+        setMessages((prev) => [...prev, { role: 'assistant', content: assistantMessage }])
+      }
 
       if (draft) {
         if (shouldAutoApply) {
@@ -1781,6 +2011,34 @@ export default function GeneratePage() {
           </button>
         </div>
         <div className="p-4 overflow-auto max-h-[calc(80vh-3.5rem)]">
+          {(lastChatRequestId || lastChatRuntime) && (
+            <div className="rounded-2xl border border-[var(--editor-border)] bg-[var(--editor-panel-muted)] p-3 mb-3">
+              <p className="text-[10px] uppercase tracking-[0.25em] text-[var(--editor-ink-muted)]">
+                Last Chat Runtime
+              </p>
+              <div className="mt-2 space-y-1 text-xs text-[var(--editor-ink)]">
+                {lastChatRequestId && <p><span className="font-semibold">request_id</span>{` · ${lastChatRequestId}`}</p>}
+                {lastChatRuntime?.model && <p><span className="font-semibold">model</span>{` · ${lastChatRuntime.model}`}</p>}
+                {typeof lastChatRuntime?.estimated_input_tokens === 'number' && (
+                  <p><span className="font-semibold">estimated_input_tokens</span>{` · ${lastChatRuntime.estimated_input_tokens}`}</p>
+                )}
+                {typeof lastChatRuntime?.context_1m_used === 'boolean' && (
+                  <p><span className="font-semibold">context_1m_used</span>{` · ${lastChatRuntime.context_1m_used ? 'yes' : 'no'}`}</p>
+                )}
+                {typeof lastChatRuntime?.tool_steps === 'number' && (
+                  <p><span className="font-semibold">tool_steps</span>{` · ${lastChatRuntime.tool_steps}`}</p>
+                )}
+                {typeof lastChatRuntime?.model_call_count === 'number' && (
+                  <p><span className="font-semibold">model_calls</span>{` · ${lastChatRuntime.model_call_count}`}</p>
+                )}
+                {lastChatRuntime?.timings_ms && (
+                  <p className="text-[var(--editor-ink-muted)]">
+                    {`timings_ms · data ${lastChatRuntime.timings_ms.data_load_ms ?? 0}, prompt ${lastChatRuntime.timings_ms.prompt_compile_ms ?? 0}, model ${lastChatRuntime.timings_ms.model_wait_ms ?? 0}, total ${lastChatRuntime.timings_ms.total_ms ?? 0}`}
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
           {promptDebug?.prompt_blocks && promptDebug.prompt_blocks.length > 0 && (
             <div className="rounded-2xl border border-[var(--editor-border)] bg-[var(--editor-panel-muted)] p-3 mb-3">
               <p className="text-[10px] uppercase tracking-[0.25em] text-[var(--editor-ink-muted)]">
@@ -1874,6 +2132,11 @@ export default function GeneratePage() {
               Conversation
             </p>
             <p className="text-sm font-semibold">Raw agent thread</p>
+            {lastChatRequestId && (
+              <p className="text-[10px] text-[var(--editor-ink-muted)] mt-1">
+                request_id: {lastChatRequestId}
+              </p>
+            )}
           </div>
           <button
             onClick={() => setConversationOpen(false)}

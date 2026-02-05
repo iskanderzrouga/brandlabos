@@ -50,6 +50,9 @@ const AGENT_MAX_STEPS = positiveIntFromEnv('AGENT_MAX_STEPS', 2)
 const AGENT_MAX_TOKENS = positiveIntFromEnv('AGENT_MAX_TOKENS', 1400)
 const AGENT_LOOP_BUDGET_MS = positiveIntFromEnv('AGENT_LOOP_BUDGET_MS', 25_000)
 const AGENT_HISTORY_LIMIT = positiveIntFromEnv('AGENT_HISTORY_LIMIT', 40)
+const AGENT_CONTEXT_MAX_MESSAGES = positiveIntFromEnv('AGENT_CONTEXT_MAX_MESSAGES', 14)
+const AGENT_CONTEXT_MAX_CHARS = positiveIntFromEnv('AGENT_CONTEXT_MAX_CHARS', 24_000)
+const AGENT_CONTEXT_MAX_CHARS_PER_MESSAGE = positiveIntFromEnv('AGENT_CONTEXT_MAX_CHARS_PER_MESSAGE', 6_000)
 const ANTHROPIC_TIMEOUT_MS = positiveIntFromEnv('ANTHROPIC_TIMEOUT_MS', 20_000)
 const ANTHROPIC_MAX_RETRIES = nonNegativeIntFromEnv('ANTHROPIC_MAX_RETRIES', 0)
 
@@ -201,6 +204,53 @@ function shouldEnableTools(messageText: string, threadContext: ThreadContext) {
     text.includes('transcript') ||
     text.includes('ingest')
   )
+}
+
+function clipWithMarker(value: string, maxChars: number): { text: string; clipped: boolean } {
+  if (maxChars <= 0) return { text: '', clipped: value.length > 0 }
+  if (value.length <= maxChars) return { text: value, clipped: false }
+  if (maxChars <= 20) return { text: value.slice(0, maxChars), clipped: true }
+  const marker = '\n[truncated]'
+  const keep = Math.max(1, maxChars - marker.length)
+  return { text: `${value.slice(0, keep)}${marker}`, clipped: true }
+}
+
+function buildBoundedMessages(rows: Array<{ role: string; content: string }>) {
+  const normalized = (rows || [])
+    .map((row) => {
+      const role = row.role === 'assistant' ? 'assistant' : 'user'
+      const baseContent = row.role === 'tool' ? `[tool] ${String(row.content || '')}` : String(row.content || '')
+      return { role, content: baseContent.trim() }
+    })
+    .filter((row) => row.content.length > 0)
+
+  const reversed: Array<{ role: 'assistant' | 'user'; content: string }> = []
+  let charBudget = 0
+
+  for (let idx = normalized.length - 1; idx >= 0; idx -= 1) {
+    if (reversed.length >= AGENT_CONTEXT_MAX_MESSAGES) break
+    if (charBudget >= AGENT_CONTEXT_MAX_CHARS) break
+
+    const row = normalized[idx]
+    const isNewestMessage = reversed.length === 0
+    const perMessageLimit =
+      isNewestMessage && row.role === 'user'
+        ? Math.max(AGENT_CONTEXT_MAX_CHARS_PER_MESSAGE, row.content.length)
+        : AGENT_CONTEXT_MAX_CHARS_PER_MESSAGE
+
+    const perMessageClipped = clipWithMarker(row.content, perMessageLimit)
+    let nextContent = perMessageClipped.text
+    const remaining = AGENT_CONTEXT_MAX_CHARS - charBudget
+    if (nextContent.length > remaining) {
+      nextContent = clipWithMarker(nextContent, remaining).text
+    }
+    if (!nextContent) continue
+
+    charBudget += nextContent.length
+    reversed.push({ role: row.role as 'assistant' | 'user', content: nextContent })
+  }
+
+  return reversed.reverse()
 }
 
 async function ingestMetaSwipe(args: { productId: string; url: string; userId: string }) {
@@ -417,16 +467,14 @@ export async function POST(request: NextRequest) {
       SELECT role, content
       FROM agent_messages
       WHERE thread_id = ${threadId}
-      ORDER BY created_at ASC
+      ORDER BY created_at DESC
       LIMIT ${AGENT_HISTORY_LIMIT}
     `
 
-    // Convert persisted messages to Anthropic messages
-    const messages: any[] = historyRows.map((m: any) => {
-      const role = m.role === 'assistant' ? 'assistant' : 'user'
-      const content = m.role === 'tool' ? `[tool] ${m.content}` : m.content
-      return { role, content }
-    })
+    // Keep a bounded, recent context window so long history doesn't blow up request size.
+    const messages: any[] = buildBoundedMessages(
+      (historyRows as Array<{ role: string; content: string }>).reverse()
+    )
 
     const anthropicKey = await getOrgApiKey('anthropic', productRow.organization_id || null)
     if (!anthropicKey) {

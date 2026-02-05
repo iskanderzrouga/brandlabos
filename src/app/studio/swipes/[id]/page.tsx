@@ -39,6 +39,7 @@ export default function SwipeDetailPage() {
   const [videoUrl, setVideoUrl] = useState<string | null>(null)
   const [showTranscript, setShowTranscript] = useState(false)
   const [feedback, setFeedback] = useState<{ tone: 'info' | 'success' | 'error'; message: string } | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [retrying, setRetrying] = useState(false)
@@ -107,13 +108,16 @@ export default function SwipeDetailPage() {
     const run = async () => {
       setLoading(true)
       setVideoUrl(null)
+      setLoadError(null)
       try {
         const res = await fetch(`/api/swipes/${id}?full=1`)
-        const data = await res.json()
+        const data = await res.json().catch(() => ({}))
         if (!active) return
         if (!res.ok) throw new Error(data?.error || 'Failed')
         setSwipe(data)
-      } catch {
+      } catch (error) {
+        if (!active) return
+        setLoadError(error instanceof Error ? error.message : 'Failed to load swipe')
         setSwipe(null)
       } finally {
         if (active) setLoading(false)
@@ -156,7 +160,14 @@ export default function SwipeDetailPage() {
     return (
       <div className="h-full p-6">
         <div className="editor-panel p-6 max-w-xl">
-          <p className="font-serif text-xl">Swipe not found</p>
+          <p className="font-serif text-xl">
+            {loadError ? 'Could not load swipe' : 'Swipe not found'}
+          </p>
+          {loadError && (
+            <p className="text-sm text-[var(--editor-ink-muted)] mt-2">
+              {loadError}
+            </p>
+          )}
           <Link href="/studio/swipes" className="text-sm text-[var(--editor-accent)] mt-3 inline-block">
             Back to swipes
           </Link>

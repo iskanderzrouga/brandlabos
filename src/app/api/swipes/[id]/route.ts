@@ -28,7 +28,7 @@ export async function GET(request: NextRequest, context: { params: Promise<{ id:
         ORDER BY created_at DESC
         LIMIT 1
       ) mj ON true
-      WHERE id = ${id}
+      WHERE swipes.id = ${id}
       LIMIT 1
     `
     const swipe = rows[0]

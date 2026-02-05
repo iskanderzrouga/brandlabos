@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { useAppContext } from '@/components/app-shell'
-import { FeedbackNotice } from '@/components/ui/feedback'
+import { ConfirmDialog, FeedbackNotice } from '@/components/ui/feedback'
 
 type ResearchCategory = {
   id: string
@@ -66,6 +66,8 @@ export default function ResearchPage() {
     quotes: true,
     awareness: true,
   })
+  const [researchItemToDelete, setResearchItemToDelete] = useState<string | null>(null)
+  const [deletingResearchItem, setDeletingResearchItem] = useState(false)
 
   const stuckCount = useMemo(() => {
     const now = Date.now()
@@ -412,6 +414,26 @@ export default function ResearchPage() {
     setFeedback({ tone: 'success', message: 'Attached to Agent.' })
   }
 
+  async function deleteResearchItem(itemId: string) {
+    if (deletingResearchItem) return
+    setDeletingResearchItem(true)
+    try {
+      const res = await fetch(`/api/research/items/${itemId}`, { method: 'DELETE' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data?.error || 'Failed to delete research item')
+      setItems((prev) => prev.filter((item) => item.id !== itemId))
+      await loadCategories()
+      setFeedback({ tone: 'success', message: 'Research item deleted.' })
+    } catch (err) {
+      setFeedback({
+        tone: 'error',
+        message: err instanceof Error ? err.message : 'Failed to delete research item',
+      })
+    } finally {
+      setDeletingResearchItem(false)
+    }
+  }
+
   if (!selectedProduct) {
     return (
       <div className="h-full flex items-center justify-center p-10">
@@ -642,6 +664,12 @@ export default function ResearchPage() {
                           className="editor-button-ghost text-xs"
                         >
                           Attach to Agent
+                        </button>
+                        <button
+                          onClick={() => setResearchItemToDelete(item.id)}
+                          className="editor-button-ghost text-xs text-red-400"
+                        >
+                          Delete
                         </button>
                         {item.status === 'processing' && (
                           <span className="text-[10px] text-[var(--editor-ink-muted)]">
@@ -993,6 +1021,19 @@ export default function ResearchPage() {
           </div>
         </div>
       )}
+      <ConfirmDialog
+        open={Boolean(researchItemToDelete)}
+        title="Delete this research item?"
+        description="This action cannot be undone."
+        confirmLabel="Delete"
+        tone="danger"
+        busy={deletingResearchItem}
+        onCancel={() => setResearchItemToDelete(null)}
+        onConfirm={() => {
+          if (!researchItemToDelete) return
+          void deleteResearchItem(researchItemToDelete).then(() => setResearchItemToDelete(null))
+        }}
+      />
     </div>
   )
 }

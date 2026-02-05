@@ -45,8 +45,9 @@ const AGENT_MAX_TOKENS = positiveIntFromEnv('AGENT_MAX_TOKENS', 1600)
 const AGENT_LOOP_BUDGET_MS = positiveIntFromEnv('AGENT_LOOP_BUDGET_MS', 55_000)
 const AGENT_HISTORY_LIMIT = positiveIntFromEnv('AGENT_HISTORY_LIMIT', 200)
 const ANTHROPIC_MAX_RETRIES = nonNegativeIntFromEnv('ANTHROPIC_MAX_RETRIES', 1)
-const ANTHROPIC_ENABLE_CONTEXT_1M = String(process.env.ANTHROPIC_ENABLE_CONTEXT_1M || '').toLowerCase() === 'true'
+const ANTHROPIC_ENABLE_CONTEXT_1M = String(process.env.ANTHROPIC_ENABLE_CONTEXT_1M ?? 'true').toLowerCase() !== 'false'
 const ANTHROPIC_CONTEXT_1M_BETA = String(process.env.ANTHROPIC_CONTEXT_1M_BETA || 'context-1m-2025-08-07')
+let context1MBetaAvailability: 'unknown' | 'enabled' | 'disabled' = 'unknown'
 
 function isToolUseBlock(block: unknown): block is ToolUseBlock {
   return (
@@ -139,17 +140,20 @@ async function createAnthropicMessage(args: {
     ...(args.tools ? { tools: args.tools } : {}),
   }
 
-  if (!ANTHROPIC_ENABLE_CONTEXT_1M) {
+  if (!ANTHROPIC_ENABLE_CONTEXT_1M || context1MBetaAvailability === 'disabled') {
     return args.anthropic.messages.create(payload)
   }
 
   try {
-    return await args.anthropic.beta.messages.create({
+    const response = await args.anthropic.beta.messages.create({
       ...payload,
       betas: [ANTHROPIC_CONTEXT_1M_BETA as any],
     })
+    context1MBetaAvailability = 'enabled'
+    return response
   } catch (error) {
     if (error instanceof APIError && isContext1MBetaAccessError(error)) {
+      context1MBetaAvailability = 'disabled'
       console.warn('Context 1M beta unavailable for this key/account. Falling back to standard messages API.')
       return args.anthropic.messages.create(payload)
     }

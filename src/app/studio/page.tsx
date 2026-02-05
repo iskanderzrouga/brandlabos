@@ -44,6 +44,38 @@ type ResearchItemRow = {
 }
 type SkillOption = { id: string; label: string; description: string; source: 'core' | 'custom' }
 
+type PromptBlockTrace = {
+  key: string
+  source: 'db' | 'default' | 'missing'
+  block_id: string | null
+  type: string | null
+  length: number
+}
+
+type PromptSectionTrace = {
+  name: string
+  length: number
+}
+
+type ContextWindowTrace = {
+  total_candidate_messages: number
+  total_candidate_chars: number
+  selected_messages: number
+  selected_chars: number
+  dropped_messages: number
+  clipped_messages: number
+  max_messages: number
+  max_chars: number
+  max_chars_per_message: number
+}
+
+type PromptDebugTrace = {
+  prompt_blocks?: PromptBlockTrace[]
+  prompt_sections?: PromptSectionTrace[]
+  context_window?: ContextWindowTrace
+  context_messages?: Array<{ role: 'user' | 'assistant'; content: string }>
+}
+
 function extractDraftBlock(text: string): string | null {
   const match = text.match(/```draft\s*([\s\S]*?)\s*```/i)
   if (!match) return null
@@ -400,6 +432,7 @@ export default function GeneratePage() {
   const [flashActive, setFlashActive] = useState(false)
   const [historyVersion, setHistoryVersion] = useState(0)
   const [promptPreview, setPromptPreview] = useState<string | null>(null)
+  const [promptDebug, setPromptDebug] = useState<PromptDebugTrace | null>(null)
   const [promptPreviewOpen, setPromptPreviewOpen] = useState(false)
   const [conversationOpen, setConversationOpen] = useState(false)
   const [feedback, setFeedback] = useState<{ tone: 'info' | 'success' | 'error'; message: string } | null>(null)
@@ -787,16 +820,21 @@ export default function GeneratePage() {
       const run = async () => {
         if (!threadId) {
           setPromptPreview(null)
+          setPromptDebug(null)
           return
         }
-        const res = await fetch(`/api/agent/threads/${threadId}/prompt`)
+        const res = await fetch(`/api/agent/threads/${threadId}/prompt?debug=1`)
         if (!res.ok) {
-          if (!cancelled) setPromptPreview(null)
+          if (!cancelled) {
+            setPromptPreview(null)
+            setPromptDebug(null)
+          }
           return
         }
         const data = await res.json().catch(() => ({}))
         if (!cancelled) {
           setPromptPreview(typeof data?.prompt === 'string' ? data.prompt : null)
+          setPromptDebug(data?.debug && typeof data.debug === 'object' ? data.debug : null)
         }
       }
       run()
@@ -1743,10 +1781,82 @@ export default function GeneratePage() {
           </button>
         </div>
         <div className="p-4 overflow-auto max-h-[calc(80vh-3.5rem)]">
+          {promptDebug?.prompt_blocks && promptDebug.prompt_blocks.length > 0 && (
+            <div className="rounded-2xl border border-[var(--editor-border)] bg-[var(--editor-panel-muted)] p-3 mb-3">
+              <p className="text-[10px] uppercase tracking-[0.25em] text-[var(--editor-ink-muted)]">
+                Prompt blocks used
+              </p>
+              <div className="mt-2 space-y-2">
+                {promptDebug.prompt_blocks.map((block) => (
+                  <div key={`${block.key}-${block.block_id || block.source}`} className="text-xs text-[var(--editor-ink)]">
+                    <span className="font-semibold">{block.key}</span>
+                    <span className="text-[var(--editor-ink-muted)]">
+                      {' '}
+                      · source: {block.source}
+                      {block.block_id ? ` · id: ${block.block_id}` : ''}
+                      {block.type ? ` · type: ${block.type}` : ''}
+                      {` · chars: ${block.length}`}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {promptDebug?.prompt_sections && promptDebug.prompt_sections.length > 0 && (
+            <div className="rounded-2xl border border-[var(--editor-border)] bg-[var(--editor-panel-muted)] p-3 mb-3">
+              <p className="text-[10px] uppercase tracking-[0.25em] text-[var(--editor-ink-muted)]">
+                System sections
+              </p>
+              <div className="mt-2 space-y-1">
+                {promptDebug.prompt_sections.map((section) => (
+                  <p key={section.name} className="text-xs text-[var(--editor-ink)]">
+                    <span className="font-semibold">{section.name}</span>
+                    <span className="text-[var(--editor-ink-muted)]">{` · chars: ${section.length}`}</span>
+                  </p>
+                ))}
+              </div>
+            </div>
+          )}
+          {promptDebug?.context_window && (
+            <div className="rounded-2xl border border-[var(--editor-border)] bg-[var(--editor-panel-muted)] p-3 mb-3">
+              <p className="text-[10px] uppercase tracking-[0.25em] text-[var(--editor-ink-muted)]">
+                Context window
+              </p>
+              <p className="mt-2 text-xs text-[var(--editor-ink)]">
+                Selected {promptDebug.context_window.selected_messages}/{promptDebug.context_window.total_candidate_messages} messages
+                {' '}({promptDebug.context_window.selected_chars}/{promptDebug.context_window.max_chars} chars)
+                {' '}· clipped: {promptDebug.context_window.clipped_messages}
+              </p>
+            </div>
+          )}
+          {promptDebug?.context_messages && promptDebug.context_messages.length > 0 && (
+            <div className="rounded-2xl border border-[var(--editor-border)] bg-[var(--editor-panel-muted)] p-3 mb-3">
+              <p className="text-[10px] uppercase tracking-[0.25em] text-[var(--editor-ink-muted)]">
+                Messages sent to model
+              </p>
+              <div className="mt-2 space-y-2">
+                {promptDebug.context_messages.map((msg, idx) => (
+                  <div key={`ctx-${idx}`} className="rounded-xl border border-[var(--editor-border)] bg-[var(--editor-panel)] p-2">
+                    <p className="text-[10px] uppercase tracking-[0.2em] text-[var(--editor-ink-muted)]">
+                      {msg.role}
+                    </p>
+                    <pre className="mt-1 whitespace-pre-wrap text-[11px] leading-5 text-[var(--editor-ink)]">
+                      {msg.content}
+                    </pre>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           {promptPreview ? (
-            <pre className="whitespace-pre-wrap text-[12px] leading-5 text-[var(--editor-ink)]">
-              {promptPreview}
-            </pre>
+            <div className="rounded-2xl border border-[var(--editor-border)] bg-[var(--editor-panel-muted)] p-3">
+              <p className="text-[10px] uppercase tracking-[0.25em] text-[var(--editor-ink-muted)]">
+                System prompt
+              </p>
+              <pre className="mt-2 whitespace-pre-wrap text-[12px] leading-5 text-[var(--editor-ink)]">
+                {promptPreview}
+              </pre>
+            </div>
           ) : (
             <p className="text-xs text-[var(--editor-ink-muted)]">No prompt preview available.</p>
           )}

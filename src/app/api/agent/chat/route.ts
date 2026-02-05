@@ -2,25 +2,15 @@ import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { sql } from '@/lib/db'
 import { requireAuth } from '@/lib/require-auth'
-import { DEFAULT_PROMPT_BLOCKS } from '@/lib/prompt-defaults'
 import { getOrgApiKey } from '@/lib/api-keys'
+import {
+  AGENT_CONTEXT_DEFAULTS,
+  buildAgentContextMessages,
+  buildSystemPrompt,
+  loadGlobalPromptBlocks,
+  type ThreadContext,
+} from '@/lib/agent/compiled-context'
 export const maxDuration = 30
-
-type ThreadContext = {
-  skill?: string
-  versions?: number
-  avatar_ids?: string[]
-  positioning_id?: string | null
-  active_swipe_id?: string | null
-  research_ids?: string[]
-}
-
-type PromptBlockRow = {
-  id: string
-  type: string
-  content: string
-  metadata?: { key?: string }
-}
 
 type ToolUseBlock = {
   type: 'tool_use'
@@ -30,8 +20,9 @@ type ToolUseBlock = {
 }
 
 const AGENT_MODEL = 'claude-opus-4-6'
-const CONTEXT_MAX_MESSAGES = 14
-const CONTEXT_MAX_CHARS = 24000
+const CONTEXT_MAX_MESSAGES = AGENT_CONTEXT_DEFAULTS.maxMessages
+const CONTEXT_MAX_CHARS = AGENT_CONTEXT_DEFAULTS.maxChars
+const CONTEXT_MAX_CHARS_PER_MESSAGE = AGENT_CONTEXT_DEFAULTS.maxCharsPerMessage
 const AGENT_MAX_STEPS = 2
 const AGENT_MAX_TOKENS = 1000
 const AGENT_CALL_TIMEOUT_MS = 9000
@@ -63,136 +54,12 @@ function isMetaAdLibraryUrl(url: string) {
   }
 }
 
-async function loadGlobalPromptBlocks(): Promise<Map<string, PromptBlockRow>> {
-  const blocks = await sql`
-    SELECT id, type, content, metadata
-    FROM prompt_blocks
-    WHERE is_active = true
-      AND scope = 'global'
-    ORDER BY updated_at DESC NULLS LAST, version DESC, created_at DESC
-  ` as PromptBlockRow[]
-
-  const map = new Map<string, PromptBlockRow>()
-  for (const b of blocks || []) {
-    const key = (b.metadata as { key?: string } | undefined)?.key || b.type
-    if (!map.has(key)) {
-      map.set(key, b)
-    }
-  }
-  return map
-}
-
-function getPromptBlockContent(blocks: Map<string, PromptBlockRow>, key: string): string {
-  const db = blocks.get(key)?.content
-  if (db) return db
-  const fallback = (DEFAULT_PROMPT_BLOCKS as any)[key]?.content
-  return typeof fallback === 'string' ? fallback : ''
-}
-
-function buildSystemPrompt(args: {
-  skill: string
-  versions: number
-  product: { name: string; content: string; brandName?: string | null; brandVoice?: string | null }
-  avatars: Array<{ id: string; name: string; content: string }>
-  positioning?: { name: string; content: string } | null
-  swipe?: { id: string; status: string; title?: string | null; summary?: string | null; transcript?: string | null; source_url?: string | null } | null
-  research?: Array<{ id: string; title?: string | null; summary?: string | null; content?: string | null }>
-  blocks: Map<string, PromptBlockRow>
-}) {
-  const {
-    skill,
-    versions,
-    product,
-    avatars,
-    positioning,
-    swipe,
-    blocks,
-  } = args
-
-  const writingRules = getPromptBlockContent(blocks, 'writing_rules')
-  const skillGuidance = getPromptBlockContent(blocks, skill)
-  const agentSystemTemplate = getPromptBlockContent(blocks, 'agent_system')
-  const agentSystem = agentSystemTemplate.replace(/{{\s*versions\s*}}/gi, () => String(versions))
-
-  const sections: string[] = []
-
-  if (agentSystem.trim()) sections.push(agentSystem)
-
-  sections.push(`## CURRENT SKILL\n${skill}`)
-  if (skillGuidance) sections.push(`## SKILL GUIDANCE\n${skillGuidance}`)
-  if (writingRules) sections.push(`## WRITING RULES\n${writingRules}`)
-
-  sections.push(`## PRODUCT\nName: ${product.name}\n\nContext:\n${product.content || '(none)'}\n`)
-  if (product.brandName || product.brandVoice) {
-    sections.push(`## BRAND\nName: ${product.brandName || '(unknown)'}\n\nVoice guidelines:\n${product.brandVoice || '(none)'}`)
-  }
-
-  if (positioning) {
-    sections.push(`## POSITIONING\n${positioning.name}\n\n${positioning.content}`)
-  }
-
-  if (avatars.length > 0) {
-    const lines: string[] = []
-    lines.push(`## AVATARS (${avatars.length})`)
-    for (const a of avatars) {
-      lines.push(`\n### ${a.name}\n${a.content}`)
-    }
-    sections.push(lines.join('\n'))
-  } else {
-    sections.push(`## AVATARS\n(none selected)`)
-  }
-
-  if (swipe) {
-    const transcript =
-      swipe.status === 'ready' && swipe.transcript
-        ? swipe.transcript.slice(0, 7000)
-        : null
-    sections.push(`## ACTIVE SWIPE\nStatus: ${swipe.status}\nURL: ${swipe.source_url || ''}\nTitle: ${swipe.title || ''}\nSummary: ${swipe.summary || ''}\n\nTranscript:\n${transcript || '(not ready yet)'}\n`)
-  }
-
-  if (args.research && args.research.length > 0) {
-    const lines: string[] = []
-    lines.push(`## RESEARCH CONTEXT (${args.research.length})`)
-    for (const item of args.research) {
-      const excerpt = item.content ? item.content.slice(0, 1200) : ''
-      lines.push(`\n### ${item.title || 'Untitled research'}\n${item.summary || ''}\n${excerpt ? `\nExcerpt:\n${excerpt}` : ''}`.trim())
-    }
-    sections.push(lines.join('\n'))
-  }
-
-  return sections.join('\n\n---\n\n')
-}
-
 function deriveThreadTitle(message: string) {
   const clean = message.replace(/\s+/g, ' ').trim()
   if (!clean) return null
   const sentence = clean.split(/[.!?\n]/)[0]
   const clipped = sentence.length > 80 ? sentence.slice(0, 80).trim() : sentence
   return clipped || null
-}
-
-function buildAgentContextMessages(historyRows: Array<{ role: string; content: string }>) {
-  const normalized = historyRows
-    .filter((row) => row.role === 'user' || row.role === 'assistant')
-    .map((row) => ({
-      role: row.role === 'assistant' ? 'assistant' : 'user',
-      content: String(row.content || '').trim(),
-    }))
-    .filter((row) => row.content.length > 0)
-
-  const recent: Array<{ role: 'user' | 'assistant'; content: string }> = []
-  let charBudget = 0
-
-  // Build from latest backwards to keep the freshest turns under a hard budget.
-  for (let i = normalized.length - 1; i >= 0; i -= 1) {
-    const row = normalized[i]
-    if (recent.length >= CONTEXT_MAX_MESSAGES) break
-    if (recent.length > 0 && charBudget + row.content.length > CONTEXT_MAX_CHARS) break
-    recent.push({ role: row.role as 'user' | 'assistant', content: row.content })
-    charBudget += row.content.length
-  }
-
-  return recent.reverse()
 }
 
 function shouldEnableTools(messageText: string, threadContext: ThreadContext) {
@@ -269,6 +136,7 @@ export async function POST(request: NextRequest) {
     const body = await request.json()
     const threadId = String(body.thread_id || '').trim()
     const messageText = String(body.message || '').trim()
+    const includeDebug = Boolean(body.debug || body.include_debug || body.debug_context)
 
     if (!threadId || !messageText) {
       return NextResponse.json({ error: 'thread_id and message are required' }, { status: 400 })
@@ -406,7 +274,7 @@ export async function POST(request: NextRequest) {
     }
 
     const blocks = await loadGlobalPromptBlocks()
-    const system = buildSystemPrompt({
+    const systemBuild = buildSystemPrompt({
       skill,
       versions,
       product: {
@@ -421,6 +289,7 @@ export async function POST(request: NextRequest) {
       research,
       blocks,
     })
+    const system = systemBuild.prompt
 
     const historyRows = await sql`
       SELECT role, content
@@ -431,9 +300,15 @@ export async function POST(request: NextRequest) {
     `
 
     // Context is thread-scoped, but we keep only a lean recent window to avoid token waste.
-    const messages: any[] = buildAgentContextMessages(
-      (historyRows as Array<{ role: string; content: string }>).reverse()
+    const contextWindow = buildAgentContextMessages(
+      (historyRows as Array<{ role: string; content: string }>).reverse(),
+      {
+        maxMessages: CONTEXT_MAX_MESSAGES,
+        maxChars: CONTEXT_MAX_CHARS,
+        maxCharsPerMessage: CONTEXT_MAX_CHARS_PER_MESSAGE,
+      }
     )
+    const messages: any[] = contextWindow.messages
 
     const anthropicKey = await getOrgApiKey('anthropic', productRow.organization_id || null)
     if (!anthropicKey) {
@@ -632,13 +507,36 @@ export async function POST(request: NextRequest) {
       VALUES (${threadId}, 'assistant', ${assistantText})
     `
 
-    return NextResponse.json({
+    const responsePayload: any = {
       assistant_message: assistantText,
       thread_context: threadContext,
       maybe_swipe_status: maybeSwipe
         ? { swipe_id: maybeSwipe.id, status: maybeSwipe.status }
         : null,
-    })
+    }
+
+    if (includeDebug) {
+      responsePayload.debug = {
+        model,
+        prompt: system,
+        prompt_blocks: systemBuild.promptBlocks,
+        prompt_sections: systemBuild.sections,
+        context_window: contextWindow.debug,
+        context_messages: contextWindow.messages,
+        request_message_chars: messageText.length,
+        runtime_limits: {
+          context_max_messages: CONTEXT_MAX_MESSAGES,
+          context_max_chars: CONTEXT_MAX_CHARS,
+          context_max_chars_per_message: CONTEXT_MAX_CHARS_PER_MESSAGE,
+          max_steps: maxSteps,
+          max_tokens: AGENT_MAX_TOKENS,
+          call_timeout_ms: AGENT_CALL_TIMEOUT_MS,
+        },
+        tools_enabled: Boolean(activeTools),
+      }
+    }
+
+    return NextResponse.json(responsePayload)
   } catch (error) {
     console.error('Agent chat error:', error)
     return NextResponse.json({ error: 'Agent chat failed' }, { status: 500 })

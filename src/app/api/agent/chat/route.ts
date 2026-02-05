@@ -28,6 +28,10 @@ type ToolUseBlock = {
   input: unknown
 }
 
+const AGENT_MODEL = 'claude-opus-4-6'
+const CONTEXT_MAX_MESSAGES = 14
+const CONTEXT_MAX_CHARS = 24000
+
 function isToolUseBlock(block: unknown): block is ToolUseBlock {
   return (
     typeof block === 'object' &&
@@ -161,6 +165,30 @@ function deriveThreadTitle(message: string) {
   const sentence = clean.split(/[.!?\n]/)[0]
   const clipped = sentence.length > 80 ? sentence.slice(0, 80).trim() : sentence
   return clipped || null
+}
+
+function buildAgentContextMessages(historyRows: Array<{ role: string; content: string }>) {
+  const normalized = historyRows
+    .filter((row) => row.role === 'user' || row.role === 'assistant')
+    .map((row) => ({
+      role: row.role === 'assistant' ? 'assistant' : 'user',
+      content: String(row.content || '').trim(),
+    }))
+    .filter((row) => row.content.length > 0)
+
+  const recent: Array<{ role: 'user' | 'assistant'; content: string }> = []
+  let charBudget = 0
+
+  // Build from latest backwards to keep the freshest turns under a hard budget.
+  for (let i = normalized.length - 1; i >= 0; i -= 1) {
+    const row = normalized[i]
+    if (recent.length >= CONTEXT_MAX_MESSAGES) break
+    if (recent.length > 0 && charBudget + row.content.length > CONTEXT_MAX_CHARS) break
+    recent.push({ role: row.role as 'user' | 'assistant', content: row.content })
+    charBudget += row.content.length
+  }
+
+  return recent.reverse()
 }
 
 async function ingestMetaSwipe(args: { productId: string; url: string; userId: string }) {
@@ -377,16 +405,14 @@ export async function POST(request: NextRequest) {
       SELECT role, content
       FROM agent_messages
       WHERE thread_id = ${threadId}
-      ORDER BY created_at ASC
-      LIMIT 40
+      ORDER BY created_at DESC
+      LIMIT 80
     `
 
-    // Convert persisted messages to Anthropic messages
-    const messages: any[] = historyRows.map((m: any) => {
-      const role = m.role === 'assistant' ? 'assistant' : 'user'
-      const content = m.role === 'tool' ? `[tool] ${m.content}` : m.content
-      return { role, content }
-    })
+    // Context is thread-scoped, but we keep only a lean recent window to avoid token waste.
+    const messages: any[] = buildAgentContextMessages(
+      (historyRows as Array<{ role: string; content: string }>).reverse()
+    )
 
     const anthropicKey = await getOrgApiKey('anthropic', productRow.organization_id || null)
     if (!anthropicKey) {
@@ -395,7 +421,7 @@ export async function POST(request: NextRequest) {
 
     const anthropic = new Anthropic({ apiKey: anthropicKey })
 
-    const model = process.env.ANTHROPIC_AGENT_MODEL || 'claude-opus-4-6'
+    const model = AGENT_MODEL
 
     const tools: any[] = [
       {

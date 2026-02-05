@@ -6,6 +6,8 @@ import { requireAuth } from '@/lib/require-auth'
 import { getOrgApiKey } from '@/lib/api-keys'
 import { DEFAULT_PROMPT_BLOCKS } from '@/lib/prompt-defaults'
 
+const AGENT_MODEL = 'claude-opus-4-6'
+
 type PromptBlockRow = {
   id: string
   type: string
@@ -84,7 +86,7 @@ async function generateSwipeTitle(args: {
     excerpt,
   })
   const response = await anthropic.messages.create({
-    model: process.env.ANTHROPIC_AGENT_MODEL || 'claude-opus-4-6',
+    model: AGENT_MODEL,
     max_tokens: 60,
     temperature: 0.2,
     system: system || undefined,

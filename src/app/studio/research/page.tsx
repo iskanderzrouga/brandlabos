@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { useAppContext } from '@/components/app-shell'
+import { FeedbackNotice } from '@/components/ui/feedback'
 
 type ResearchCategory = {
   id: string
@@ -47,6 +48,7 @@ export default function ResearchPage() {
   const [organizePlan, setOrganizePlan] = useState<OrganizePlan | null>(null)
   const [organizing, setOrganizing] = useState(false)
   const [organizeOpen, setOrganizeOpen] = useState(false)
+  const [feedback, setFeedback] = useState<{ tone: 'info' | 'success' | 'error'; message: string } | null>(null)
 
   const stuckCount = useMemo(() => {
     const now = Date.now()
@@ -126,7 +128,10 @@ export default function ResearchPage() {
       await loadItems()
       await loadCategories()
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Failed to add research')
+      setFeedback({
+        tone: 'error',
+        message: err instanceof Error ? err.message : 'Failed to add research',
+      })
     } finally {
       setAddingText(false)
     }
@@ -203,7 +208,10 @@ export default function ResearchPage() {
       setOrganizePlan(data)
       setOrganizeOpen(true)
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Failed to organize')
+      setFeedback({
+        tone: 'error',
+        message: err instanceof Error ? err.message : 'Failed to organize',
+      })
     } finally {
       setOrganizing(false)
     }
@@ -230,24 +238,58 @@ export default function ResearchPage() {
       await loadCategories()
       await loadItems()
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Failed to apply')
+      setFeedback({
+        tone: 'error',
+        message: err instanceof Error ? err.message : 'Failed to apply',
+      })
     } finally {
       setOrganizing(false)
     }
   }
 
+  async function ensureThreadForAttach(): Promise<string | null> {
+    if (!selectedProduct) return null
+    const storageKey = `bl_active_thread_${selectedProduct}`
+    const stored = typeof window !== 'undefined' ? localStorage.getItem(storageKey) : null
+
+    if (stored) {
+      const existingRes = await fetch(`/api/agent/threads/${stored}`)
+      if (existingRes.ok) return stored
+    }
+
+    const listRes = await fetch(`/api/agent/threads?product_id=${selectedProduct}&limit=1`)
+    if (listRes.ok) {
+      const list = await listRes.json().catch(() => [])
+      const first = Array.isArray(list) ? list[0] : null
+      if (first?.id) {
+        localStorage.setItem(storageKey, first.id)
+        return first.id
+      }
+    }
+
+    const createRes = await fetch('/api/agent/threads', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ product_id: selectedProduct }),
+    })
+    if (!createRes.ok) return null
+    const created = await createRes.json().catch(() => null)
+    if (!created?.id) return null
+    localStorage.setItem(storageKey, created.id)
+    return created.id as string
+  }
+
   async function attachToAgent(itemId: string) {
     if (!selectedProduct) return
-    const storageKey = `bl_active_thread_${selectedProduct}`
-    const threadId = typeof window !== 'undefined' ? localStorage.getItem(storageKey) : null
+    const threadId = await ensureThreadForAttach()
     if (!threadId) {
-      alert('Open the Agent first to attach research.')
+      setFeedback({ tone: 'error', message: 'Could not find or create an Agent thread.' })
       return
     }
 
     const res = await fetch(`/api/agent/threads/${threadId}`)
     if (!res.ok) {
-      alert('Failed to load active thread.')
+      setFeedback({ tone: 'error', message: 'Failed to load active thread.' })
       return
     }
     const thread = await res.json()
@@ -258,7 +300,7 @@ export default function ResearchPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ context: { research_ids: next } }),
     })
-    alert('Attached to Agent.')
+    setFeedback({ tone: 'success', message: 'Attached to Agent.' })
   }
 
   if (!selectedProduct) {
@@ -279,6 +321,15 @@ export default function ResearchPage() {
 
   return (
     <div className="h-full min-h-0 p-6 overflow-hidden">
+      {feedback && (
+        <div className="mb-4">
+          <FeedbackNotice
+            message={feedback.message}
+            tone={feedback.tone}
+            onDismiss={() => setFeedback(null)}
+          />
+        </div>
+      )}
       <div className="flex flex-col lg:flex-row gap-6 h-full min-h-0">
         {/* Sidebar */}
         <aside className="w-full lg:w-64 editor-panel p-4 flex flex-col min-h-0">

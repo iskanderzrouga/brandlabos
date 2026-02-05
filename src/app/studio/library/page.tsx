@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { useEffect, useMemo, useState } from 'react'
 import { useAppContext } from '@/components/app-shell'
+import { ConfirmDialog, FeedbackNotice } from '@/components/ui/feedback'
 
 type ThreadRow = {
   id: string
@@ -32,16 +33,27 @@ export default function LibraryPage() {
   const [threads, setThreads] = useState<ThreadRow[]>([])
   const [loading, setLoading] = useState(true)
   const [q, setQ] = useState('')
+  const [feedback, setFeedback] = useState<{ tone: 'info' | 'success' | 'error'; message: string } | null>(null)
+  const [threadToDelete, setThreadToDelete] = useState<string | null>(null)
+  const [deleting, setDeleting] = useState(false)
 
   async function handleDelete(id: string) {
-    if (!confirm('Delete this asset? This cannot be undone.')) return
-    const res = await fetch(`/api/agent/threads/${id}`, { method: 'DELETE' })
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}))
-      alert(data?.error || 'Failed to delete asset')
-      return
+    if (deleting) return
+    setDeleting(true)
+    try {
+      const res = await fetch(`/api/agent/threads/${id}`, { method: 'DELETE' })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        setFeedback({ tone: 'error', message: data?.error || 'Failed to delete asset' })
+        return
+      }
+      setThreads((prev) => prev.filter((t) => t.id !== id))
+      setFeedback({ tone: 'success', message: 'Asset deleted.' })
+    } catch {
+      setFeedback({ tone: 'error', message: 'Failed to delete asset' })
+    } finally {
+      setDeleting(false)
     }
-    setThreads((prev) => prev.filter((t) => t.id !== id))
   }
 
   async function load() {
@@ -92,6 +104,15 @@ export default function LibraryPage() {
   return (
     <div className="h-full p-6 overflow-auto">
       <div className="max-w-5xl mx-auto">
+        {feedback && (
+          <div className="mb-4">
+            <FeedbackNotice
+              message={feedback.message}
+              tone={feedback.tone}
+              onDismiss={() => setFeedback(null)}
+            />
+          </div>
+        )}
         <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-4 mb-6">
           <div>
             <p className="text-[10px] uppercase tracking-[0.3em] text-[var(--editor-ink-muted)]">
@@ -148,7 +169,7 @@ export default function LibraryPage() {
                         onClick={(e) => {
                           e.preventDefault()
                           e.stopPropagation()
-                          handleDelete(t.id)
+                          setThreadToDelete(t.id)
                         }}
                         className="text-[11px] text-red-400 hover:text-red-300"
                       >
@@ -162,6 +183,19 @@ export default function LibraryPage() {
           </div>
         )}
       </div>
+      <ConfirmDialog
+        open={Boolean(threadToDelete)}
+        title="Delete this asset?"
+        description="This action cannot be undone."
+        confirmLabel="Delete"
+        tone="danger"
+        busy={deleting}
+        onCancel={() => setThreadToDelete(null)}
+        onConfirm={() => {
+          if (!threadToDelete) return
+          void handleDelete(threadToDelete).then(() => setThreadToDelete(null))
+        }}
+      />
     </div>
   )
 }

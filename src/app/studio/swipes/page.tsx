@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { useEffect, useMemo, useState } from 'react'
 import { useAppContext } from '@/components/app-shell'
+import { ConfirmDialog, FeedbackNotice } from '@/components/ui/feedback'
 
 type SwipeRow = {
   id: string
@@ -30,6 +31,9 @@ export default function SwipesPage() {
   const [avatars, setAvatars] = useState<Array<{ id: string; name: string }>>([])
   const [pitches, setPitches] = useState<Array<{ id: string; name: string }>>([])
   const [savingManual, setSavingManual] = useState(false)
+  const [feedback, setFeedback] = useState<{ tone: 'info' | 'success' | 'error'; message: string } | null>(null)
+  const [swipeToDelete, setSwipeToDelete] = useState<string | null>(null)
+  const [deletingSwipe, setDeletingSwipe] = useState(false)
 
   const filtered = useMemo(() => {
     const query = q.trim().toLowerCase()
@@ -108,7 +112,10 @@ export default function SwipesPage() {
       setIngestUrl('')
       await load()
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Failed to ingest')
+      setFeedback({
+        tone: 'error',
+        message: err instanceof Error ? err.message : 'Failed to ingest',
+      })
     } finally {
       setIngesting(false)
     }
@@ -148,21 +155,32 @@ export default function SwipesPage() {
       setManualOpen(false)
       await load()
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Failed to save swipe')
+      setFeedback({
+        tone: 'error',
+        message: err instanceof Error ? err.message : 'Failed to save swipe',
+      })
     } finally {
       setSavingManual(false)
     }
   }
 
   async function handleDelete(id: string) {
-    if (!confirm('Delete this swipe? This cannot be undone.')) return
-    const res = await fetch(`/api/swipes/${id}`, { method: 'DELETE' })
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}))
-      alert(data?.error || 'Failed to delete swipe')
-      return
+    if (deletingSwipe) return
+    setDeletingSwipe(true)
+    try {
+      const res = await fetch(`/api/swipes/${id}`, { method: 'DELETE' })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        setFeedback({ tone: 'error', message: data?.error || 'Failed to delete swipe' })
+        return
+      }
+      setSwipes((prev) => prev.filter((s) => s.id !== id))
+      setFeedback({ tone: 'success', message: 'Swipe deleted.' })
+    } catch {
+      setFeedback({ tone: 'error', message: 'Failed to delete swipe' })
+    } finally {
+      setDeletingSwipe(false)
     }
-    setSwipes((prev) => prev.filter((s) => s.id !== id))
   }
 
   if (!selectedProduct) {
@@ -184,6 +202,15 @@ export default function SwipesPage() {
   return (
     <div className="h-full p-6 overflow-auto">
       <div className="max-w-5xl mx-auto">
+        {feedback && (
+          <div className="mb-4">
+            <FeedbackNotice
+              message={feedback.message}
+              tone={feedback.tone}
+              onDismiss={() => setFeedback(null)}
+            />
+          </div>
+        )}
         <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-4 mb-6">
           <div>
             <p className="text-[10px] uppercase tracking-[0.3em] text-[var(--editor-ink-muted)]">
@@ -388,15 +415,15 @@ export default function SwipesPage() {
                       {new Date(s.created_at).toLocaleString()}
                     </p>
                   )}
-                  <button
-                    onClick={(e) => {
-                      e.preventDefault()
-                      e.stopPropagation()
-                      handleDelete(s.id)
-                    }}
-                    className="text-[11px] text-red-400 hover:text-red-300"
-                  >
-                    Delete
+                      <button
+                        onClick={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          setSwipeToDelete(s.id)
+                        }}
+                        className="text-[11px] text-red-400 hover:text-red-300"
+                      >
+                        Delete
                   </button>
                 </div>
               </Link>
@@ -404,6 +431,19 @@ export default function SwipesPage() {
           </div>
         )}
       </div>
+      <ConfirmDialog
+        open={Boolean(swipeToDelete)}
+        title="Delete this swipe?"
+        description="This action cannot be undone."
+        confirmLabel="Delete"
+        tone="danger"
+        busy={deletingSwipe}
+        onCancel={() => setSwipeToDelete(null)}
+        onConfirm={() => {
+          if (!swipeToDelete) return
+          void handleDelete(swipeToDelete).then(() => setSwipeToDelete(null))
+        }}
+      />
     </div>
   )
 }

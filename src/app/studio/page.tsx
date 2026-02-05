@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAppContext } from '@/components/app-shell'
 import { CONTENT_TYPES } from '@/lib/content-types'
+import { ConfirmDialog, FeedbackNotice } from '@/components/ui/feedback'
 
 type AgentRole = 'user' | 'assistant' | 'tool'
 
@@ -146,7 +147,7 @@ function renderInline(text: string, keyPrefix: string) {
       )
       return
     }
-    const regex = /(\*\*[^*]+\*\*|\*[^*]+\*)/g
+    const regex = /(\*\*[^*]+\*\*|\*[^*]+\*|\[[^\]]+\]\(https?:\/\/[^)\s]+\))/g
     let last = 0
     let match: RegExpExecArray | null
     while ((match = regex.exec(part))) {
@@ -158,6 +159,22 @@ function renderInline(text: string, keyPrefix: string) {
         out.push(
           <strong key={`${keyPrefix}-bold-${match.index}`}>{token.slice(2, -2)}</strong>
         )
+      } else if (token.startsWith('[')) {
+        const linkMatch = token.match(/^\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)$/)
+        if (linkMatch) {
+          out.push(
+            <a
+              key={`${keyPrefix}-link-${match.index}`}
+              href={linkMatch[2]}
+              target="_blank"
+              rel="noreferrer"
+            >
+              {linkMatch[1]}
+            </a>
+          )
+        } else {
+          out.push(token)
+        }
       } else {
         out.push(
           <em key={`${keyPrefix}-em-${match.index}`}>{token.slice(1, -1)}</em>
@@ -219,6 +236,25 @@ function renderMarkdownBlocks(text: string) {
 
     if (/^---+$/.test(line.trim())) {
       blocks.push(<hr key={`hr-${blockIndex}`} />)
+      blockIndex += 1
+      i += 1
+      continue
+    }
+
+    const headingMatch = line.match(/^\s*(#{1,4})\s+(.+)$/)
+    if (headingMatch) {
+      const depth = Math.min(4, headingMatch[1].length)
+      const textContent = headingMatch[2].trim()
+      const key = `h-${blockIndex}`
+      if (depth === 1) {
+        blocks.push(<h1 key={key}>{renderInline(textContent, key)}</h1>)
+      } else if (depth === 2) {
+        blocks.push(<h2 key={key}>{renderInline(textContent, key)}</h2>)
+      } else if (depth === 3) {
+        blocks.push(<h3 key={key}>{renderInline(textContent, key)}</h3>)
+      } else {
+        blocks.push(<h4 key={key}>{renderInline(textContent, key)}</h4>)
+      }
       blockIndex += 1
       i += 1
       continue
@@ -307,6 +343,16 @@ function makeSkillKey(name: string) {
   return `custom_${base}`
 }
 
+async function readJsonFromResponse<T>(res: Response): Promise<T | null> {
+  const raw = await res.text()
+  if (!raw) return null
+  try {
+    return JSON.parse(raw) as T
+  } catch {
+    return null
+  }
+}
+
 export default function GeneratePage() {
   const { selectedProduct, openContextDrawer, setContextDrawerExtra, setTopBarExtra } = useAppContext()
 
@@ -350,6 +396,9 @@ export default function GeneratePage() {
   const [promptPreview, setPromptPreview] = useState<string | null>(null)
   const [promptPreviewOpen, setPromptPreviewOpen] = useState(false)
   const [conversationOpen, setConversationOpen] = useState(false)
+  const [feedback, setFeedback] = useState<{ tone: 'info' | 'success' | 'error'; message: string } | null>(null)
+  const [threadToDelete, setThreadToDelete] = useState<string | null>(null)
+  const [deletingThread, setDeletingThread] = useState(false)
 
   // Editor
   const [activeTab, setActiveTab] = useState(0)
@@ -492,7 +541,7 @@ export default function GeneratePage() {
     if (!id) return
     setThreadHydrating(true)
     setMessages([])
-    setThreadId(id)
+    setThreadId(null)
     setThreadContext({})
     setCanvasTabs([''])
     setActiveTab(0)
@@ -502,6 +551,15 @@ export default function GeneratePage() {
 
     const threadRes = await fetch(`/api/agent/threads/${id}`)
     if (!threadRes.ok) {
+      setFeedback({
+        tone: 'error',
+        message: 'Could not load that asset. It may have been deleted.',
+      })
+      if (storageKey) localStorage.removeItem(storageKey)
+      const params = new URLSearchParams(window.location.search)
+      params.delete('thread')
+      const suffix = params.toString()
+      window.history.replaceState(null, '', suffix ? `/studio?${suffix}` : '/studio')
       setThreadHydrating(false)
       return
     }
@@ -576,6 +634,10 @@ export default function GeneratePage() {
 
       if (candidateExists) {
         await loadThreadById(threadFromUrl as string)
+      } else if (threadFromUrl) {
+        params.delete('thread')
+        const suffix = params.toString()
+        window.history.replaceState(null, '', suffix ? `/studio?${suffix}` : '/studio')
       }
     }
     run()
@@ -1442,8 +1504,20 @@ export default function GeneratePage() {
         body: JSON.stringify({ thread_id: threadId, message: fullMessage }),
       })
 
-      const data = await res.json()
-      if (!res.ok) throw new Error(data?.error || 'Agent chat failed')
+      const data = await readJsonFromResponse<{
+        error?: string
+        assistant_message?: string
+        thread_context?: ThreadContext
+      }>(res)
+      if (!res.ok) {
+        const fallback = data?.error
+          ? data.error
+          : `Agent chat failed (${res.status}).`
+        throw new Error(fallback)
+      }
+      if (!data?.assistant_message) {
+        throw new Error('Agent returned an invalid response format.')
+      }
 
       const assistantMessage = data.assistant_message
       const draft = extractDraftBlock(assistantMessage)
@@ -1465,6 +1539,7 @@ export default function GeneratePage() {
       queueMicrotask(() => scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }))
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to send'
+      setFeedback({ tone: 'error', message: msg })
       setMessages((prev) => [...prev, { role: 'tool', content: msg }])
     } finally {
       pendingAutoApplyRef.current = false
@@ -1484,31 +1559,39 @@ export default function GeneratePage() {
 
   async function handleDeleteThread(id: string) {
     if (!id) return
-    if (!confirm('Delete this asset? This cannot be undone.')) return
-
-    const res = await fetch(`/api/agent/threads/${id}`, { method: 'DELETE' })
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}))
-      alert(data?.error || 'Failed to delete asset')
-      return
-    }
-
-    const nextThreads = threads.filter((t) => t.id !== id)
-    setThreads(nextThreads)
-
-    if (id === threadId) {
-      if (storageKey) {
-        localStorage.removeItem(storageKey)
+    if (deletingThread) return
+    setDeletingThread(true)
+    try {
+      const res = await fetch(`/api/agent/threads/${id}`, { method: 'DELETE' })
+      if (!res.ok) {
+        const data = await readJsonFromResponse<{ error?: string }>(res)
+        setFeedback({ tone: 'error', message: data?.error || 'Failed to delete asset' })
+        return
       }
-      const params = new URLSearchParams(window.location.search)
-      params.delete('thread')
-      window.history.replaceState(null, '', `/studio?${params.toString()}`)
 
-      if (nextThreads[0]) {
-        await loadThreadById(nextThreads[0].id)
-      } else {
-        resetEditorState()
+      const nextThreads = threads.filter((t) => t.id !== id)
+      setThreads(nextThreads)
+
+      if (id === threadId) {
+        if (storageKey) {
+          localStorage.removeItem(storageKey)
+        }
+        const params = new URLSearchParams(window.location.search)
+        params.delete('thread')
+        const suffix = params.toString()
+        window.history.replaceState(null, '', suffix ? `/studio?${suffix}` : '/studio')
+
+        if (nextThreads[0]) {
+          await loadThreadById(nextThreads[0].id)
+        } else {
+          resetEditorState()
+        }
       }
+      setFeedback({ tone: 'success', message: 'Asset deleted.' })
+    } catch {
+      setFeedback({ tone: 'error', message: 'Failed to delete asset' })
+    } finally {
+      setDeletingThread(false)
     }
   }
 
@@ -1693,11 +1776,37 @@ export default function GeneratePage() {
     </div>
   )
 
+  const deleteThreadModal = (
+    <ConfirmDialog
+      open={Boolean(threadToDelete)}
+      title="Delete this asset?"
+      description="This action cannot be undone."
+      confirmLabel="Delete"
+      tone="danger"
+      busy={deletingThread}
+      onCancel={() => setThreadToDelete(null)}
+      onConfirm={() => {
+        if (!threadToDelete) return
+        void handleDeleteThread(threadToDelete).then(() => setThreadToDelete(null))
+      }}
+    />
+  )
+
   if (!threadId && !threadHydrating) {
     return (
       <div className="h-full flex items-center justify-center p-6">
         {promptModal}
+        {deleteThreadModal}
         <div className="editor-panel w-full max-w-2xl p-6">
+          {feedback && (
+            <div className="mb-4">
+              <FeedbackNotice
+                message={feedback.message}
+                tone={feedback.tone}
+                onDismiss={() => setFeedback(null)}
+              />
+            </div>
+          )}
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
             <div>
               <p className="text-[10px] uppercase tracking-[0.28em] text-[var(--editor-ink-muted)]">
@@ -1752,6 +1861,7 @@ export default function GeneratePage() {
   return (
     <div className="h-full min-h-0 flex flex-col">
       {promptModal}
+      {deleteThreadModal}
       <div className="flex-1 min-h-0 h-full grid grid-cols-1 lg:grid-cols-[360px_1fr] gap-5 p-5 overflow-hidden">
         {/* Chat */}
         <section className="editor-panel relative flex flex-col overflow-hidden min-h-0">
@@ -1764,7 +1874,7 @@ export default function GeneratePage() {
                 </button>
                 {threadId && (
                   <button
-                    onClick={() => handleDeleteThread(threadId)}
+                    onClick={() => setThreadToDelete(threadId)}
                     className="editor-button-ghost text-xs text-red-300"
                   >
                     Delete
@@ -1796,6 +1906,15 @@ export default function GeneratePage() {
             </div>
           ) : (
             <>
+              {feedback && (
+                <div className="px-4 pt-3">
+                  <FeedbackNotice
+                    message={feedback.message}
+                    tone={feedback.tone}
+                    onDismiss={() => setFeedback(null)}
+                  />
+                </div>
+              )}
               <div ref={scrollRef} className="flex-1 overflow-auto p-4 space-y-3">
                 {messages.length === 0 ? null : (
                   messages.map((m, idx) => {

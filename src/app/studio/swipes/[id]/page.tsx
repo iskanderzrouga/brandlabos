@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { useParams, useRouter } from 'next/navigation'
 import { useEffect, useMemo, useState } from 'react'
+import { ConfirmDialog, FeedbackNotice } from '@/components/ui/feedback'
 
 type SwipeRow = {
   id: string
@@ -24,6 +25,9 @@ export default function SwipeDetailPage() {
   const [swipe, setSwipe] = useState<SwipeRow | null>(null)
   const [videoUrl, setVideoUrl] = useState<string | null>(null)
   const [showTranscript, setShowTranscript] = useState(false)
+  const [feedback, setFeedback] = useState<{ tone: 'info' | 'success' | 'error'; message: string } | null>(null)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [deleting, setDeleting] = useState(false)
 
   const statusLabel = useMemo(() => {
     if (!swipe) return ''
@@ -33,14 +37,21 @@ export default function SwipeDetailPage() {
   }, [swipe])
 
   async function handleDelete() {
-    if (!confirm('Delete this swipe? This cannot be undone.')) return
-    const res = await fetch(`/api/swipes/${id}`, { method: 'DELETE' })
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}))
-      alert(data?.error || 'Failed to delete swipe')
-      return
+    if (deleting) return
+    setDeleting(true)
+    try {
+      const res = await fetch(`/api/swipes/${id}`, { method: 'DELETE' })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        setFeedback({ tone: 'error', message: data?.error || 'Failed to delete swipe' })
+        return
+      }
+      router.push('/studio/swipes')
+    } catch {
+      setFeedback({ tone: 'error', message: 'Failed to delete swipe' })
+    } finally {
+      setDeleting(false)
     }
-    router.push('/studio/swipes')
   }
 
   useEffect(() => {
@@ -109,6 +120,13 @@ export default function SwipeDetailPage() {
   return (
     <div className="h-full p-6 overflow-auto">
       <div className="max-w-5xl mx-auto space-y-5">
+        {feedback && (
+          <FeedbackNotice
+            message={feedback.message}
+            tone={feedback.tone}
+            onDismiss={() => setFeedback(null)}
+          />
+        )}
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
             <p className="text-[10px] uppercase tracking-[0.3em] text-[var(--editor-ink-muted)]">
@@ -137,7 +155,10 @@ export default function SwipeDetailPage() {
             >
               {statusLabel}
             </span>
-            <button onClick={handleDelete} className="editor-button-ghost text-xs text-red-300">
+            <button
+              onClick={() => setConfirmDelete(true)}
+              className="editor-button-ghost text-xs text-red-300"
+            >
               Delete
             </button>
             <Link href={`/studio?swipe=${swipe.id}`} className="editor-button-ghost text-xs">
@@ -204,6 +225,18 @@ export default function SwipeDetailPage() {
           )}
         </div>
       </div>
+      <ConfirmDialog
+        open={confirmDelete}
+        title="Delete this swipe?"
+        description="This action cannot be undone."
+        confirmLabel="Delete"
+        tone="danger"
+        busy={deleting}
+        onCancel={() => setConfirmDelete(false)}
+        onConfirm={() => {
+          void handleDelete().then(() => setConfirmDelete(false))
+        }}
+      />
     </div>
   )
 }

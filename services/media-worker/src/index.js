@@ -319,7 +319,7 @@ async function scrapeMetaAdVideo(url) {
     let fallbackUrl = null
     if (!best) {
       const html = await page.content()
-      const m = html.match(/https?:\\/\\/[^\"'\\s>]+\\.mp4[^\"'\\s>]*/i)
+      const m = html.match(/https?:\/\/[^"'\s>]+\.mp4[^"'\s>]*/i)
       if (m) fallbackUrl = m[0]
     }
 

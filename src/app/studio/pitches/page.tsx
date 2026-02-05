@@ -1,7 +1,8 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useAppContext } from '@/components/app-shell'
+import { ConfirmDialog, FeedbackNotice } from '@/components/ui/feedback'
 
 interface Pitch {
   id: string
@@ -12,32 +13,51 @@ interface Pitch {
 }
 
 export default function PitchesPage() {
-  const { selectedProduct } = useAppContext()
+  const { selectedProduct, openContextDrawer } = useAppContext()
   const [pitches, setPitches] = useState<Pitch[]>([])
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(false)
   const [creating, setCreating] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
-
-  // Form state
   const [name, setName] = useState('')
   const [content, setContent] = useState('')
   const [saving, setSaving] = useState(false)
+  const [feedback, setFeedback] = useState<{ tone: 'info' | 'success' | 'error'; message: string } | null>(null)
+  const [pitchToDelete, setPitchToDelete] = useState<string | null>(null)
+  const [deletingPitch, setDeletingPitch] = useState(false)
+
+  const sortedPitches = useMemo(() => {
+    return [...pitches].sort((a, b) => Number(b.is_active) - Number(a.is_active))
+  }, [pitches])
 
   useEffect(() => {
-    if (!selectedProduct) {
-      setPitches([])
-      setLoading(false)
-      return
-    }
+    let active = true
+    const run = async () => {
+      if (!selectedProduct) {
+        if (active) {
+          setPitches([])
+          setLoading(false)
+        }
+        return
+      }
 
-    setLoading(true)
-    fetch(`/api/pitches?product_id=${selectedProduct}`)
-      .then(r => r.json())
-      .then(data => {
+      setLoading(true)
+      try {
+        const res = await fetch(`/api/pitches?product_id=${selectedProduct}`)
+        const data = await res.json().catch(() => [])
+        if (!active) return
         setPitches(Array.isArray(data) ? data : [])
-      })
-      .catch(() => setPitches([]))
-      .finally(() => setLoading(false))
+      } catch {
+        if (!active) return
+        setPitches([])
+        setFeedback({ tone: 'error', message: 'Failed to load positioning.' })
+      } finally {
+        if (active) setLoading(false)
+      }
+    }
+    run()
+    return () => {
+      active = false
+    }
   }, [selectedProduct])
 
   function resetForm() {
@@ -51,9 +71,8 @@ export default function PitchesPage() {
   }
 
   async function handleCreate() {
-    if (!selectedProduct) return
+    if (!selectedProduct || saving) return
     setSaving(true)
-
     try {
       const res = await fetch('/api/pitches', {
         method: 'POST',
@@ -64,47 +83,67 @@ export default function PitchesPage() {
           content,
         }),
       })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data?.error || 'Failed to create positioning')
 
-      const data = await res.json()
-
-      if (res.ok) {
-        setPitches(prev => [data, ...prev])
-        setCreating(false)
-        resetForm()
-      } else {
-        console.error('Failed to create positioning:', data)
-        alert(`Failed to create positioning: ${data.error || 'Unknown error'}`)
-      }
+      setPitches((prev) => [data, ...prev])
+      setCreating(false)
+      resetForm()
+      setFeedback({ tone: 'success', message: 'Positioning created.' })
     } catch (err) {
-      console.error('Error creating positioning:', err)
-      alert('Failed to create positioning - check console for details')
+      setFeedback({
+        tone: 'error',
+        message: err instanceof Error ? err.message : 'Failed to create positioning',
+      })
+    } finally {
+      setSaving(false)
     }
-    setSaving(false)
   }
 
   async function handleUpdate() {
-    if (!editingId) return
+    if (!editingId || saving) return
     setSaving(true)
-
-    const res = await fetch(`/api/pitches/${editingId}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, content }),
-    })
-
-    if (res.ok) {
-      const updated = await res.json()
-      setPitches(prev => prev.map(p => p.id === editingId ? updated : p))
+    try {
+      const res = await fetch(`/api/pitches/${editingId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, content }),
+      })
+      const updated = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(updated?.error || 'Failed to update positioning')
+      setPitches((prev) => prev.map((p) => (p.id === editingId ? updated : p)))
       setEditingId(null)
       resetForm()
+      setFeedback({ tone: 'success', message: 'Positioning updated.' })
+    } catch (err) {
+      setFeedback({
+        tone: 'error',
+        message: err instanceof Error ? err.message : 'Failed to update positioning',
+      })
+    } finally {
+      setSaving(false)
     }
-    setSaving(false)
   }
 
   async function handleDelete(id: string) {
-    if (!confirm('Delete this positioning?')) return
-    await fetch(`/api/pitches/${id}`, { method: 'DELETE' })
-    setPitches(prev => prev.filter(p => p.id !== id))
+    if (deletingPitch) return
+    setDeletingPitch(true)
+    try {
+      const res = await fetch(`/api/pitches/${id}`, { method: 'DELETE' })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data?.error || 'Failed to delete positioning')
+      }
+      setPitches((prev) => prev.filter((p) => p.id !== id))
+      setFeedback({ tone: 'success', message: 'Positioning deleted.' })
+    } catch (err) {
+      setFeedback({
+        tone: 'error',
+        message: err instanceof Error ? err.message : 'Failed to delete positioning',
+      })
+    } finally {
+      setDeletingPitch(false)
+    }
   }
 
   async function handleToggleActive(pitch: Pitch) {
@@ -113,155 +152,182 @@ export default function PitchesPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ is_active: !pitch.is_active }),
     })
-
-    if (res.ok) {
-      const updated = await res.json()
-      setPitches(prev => prev.map(p => p.id === pitch.id ? updated : p))
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      setFeedback({ tone: 'error', message: data?.error || 'Failed to update positioning' })
+      return
     }
+    const updated = await res.json()
+    setPitches((prev) => prev.map((p) => (p.id === pitch.id ? updated : p)))
   }
 
   if (!selectedProduct) {
     return (
-      <div className="p-6">
-        <p className="text-gray-500">Select a product from the top bar first</p>
+      <div className="h-full flex items-center justify-center p-10">
+        <div className="editor-panel p-8 max-w-lg w-full text-center">
+          <p className="font-serif text-2xl">Select a product</p>
+          <p className="text-sm text-[var(--editor-ink-muted)] mt-2">
+            Positioning is managed per product.
+          </p>
+          <button onClick={openContextDrawer} className="editor-button mt-6">
+            Open Context
+          </button>
+        </div>
       </div>
     )
   }
 
-  const isFormOpen = creating || editingId
+  const isFormOpen = creating || Boolean(editingId)
 
   return (
-    <div className="p-6 h-full flex flex-col max-w-4xl">
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-semibold text-gray-900">Positioning</h1>
-          <p className="text-sm text-gray-500 mt-1">
-            Create different angles and value propositions your agent can use
-          </p>
+    <div className="h-full p-6 overflow-auto">
+      <div className="max-w-5xl mx-auto">
+        {feedback && (
+          <div className="mb-4">
+            <FeedbackNotice
+              message={feedback.message}
+              tone={feedback.tone}
+              onDismiss={() => setFeedback(null)}
+            />
+          </div>
+        )}
+
+        <div className="flex items-center justify-between mb-6 gap-3">
+          <div>
+            <p className="text-[10px] uppercase tracking-[0.3em] text-[var(--editor-ink-muted)]">
+              Strategy
+            </p>
+            <h1 className="font-serif text-3xl leading-tight">Positioning</h1>
+            <p className="text-sm text-[var(--editor-ink-muted)] mt-1">
+              Define angles and value propositions for the agent.
+            </p>
+          </div>
+          {!isFormOpen && (
+            <button
+              onClick={() => {
+                resetForm()
+                setCreating(true)
+              }}
+              className="editor-button text-sm"
+            >
+              New Positioning
+            </button>
+          )}
         </div>
-        {!isFormOpen && (
-          <button
-            onClick={() => {
-              resetForm()
-              setCreating(true)
-            }}
-            className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 text-sm font-medium transition-colors"
-          >
-            + New Positioning
-          </button>
+
+        {isFormOpen && (
+          <div className="editor-panel p-5 mb-6 space-y-4">
+            <h2 className="text-sm font-semibold text-[var(--editor-ink)]">
+              {creating ? 'New Positioning' : 'Edit Positioning'}
+            </h2>
+            <div>
+              <label className="block text-xs uppercase tracking-[0.22em] text-[var(--editor-ink-muted)] mb-2">
+                Name
+              </label>
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="e.g., Prevent stains before they start"
+                className="editor-input w-full text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-xs uppercase tracking-[0.22em] text-[var(--editor-ink-muted)] mb-2">
+                Positioning Content
+              </label>
+              <textarea
+                value={content}
+                onChange={(e) => setContent(e.target.value)}
+                rows={7}
+                className="editor-input w-full text-sm resize-none"
+                placeholder="Describe the angle, mechanism, and emotional promise."
+              />
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                onClick={creating ? handleCreate : handleUpdate}
+                disabled={saving || !name.trim() || !content.trim()}
+                className="editor-button text-xs"
+              >
+                {saving ? 'Saving...' : creating ? 'Create' : 'Save'}
+              </button>
+              <button
+                onClick={() => {
+                  setCreating(false)
+                  setEditingId(null)
+                  resetForm()
+                }}
+                className="editor-button-ghost text-xs"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {loading ? (
+          <p className="text-sm text-[var(--editor-ink-muted)]">Loading...</p>
+        ) : sortedPitches.length === 0 ? (
+          <div className="editor-panel-soft p-8 text-center">
+            <p className="text-sm text-[var(--editor-ink-muted)]">
+              No positioning yet. Create one to guide the agent.
+            </p>
+          </div>
+        ) : (
+          <div className="grid gap-4">
+            {sortedPitches.map((pitch) => (
+              <div key={pitch.id} className="editor-panel p-5">
+                <div className="flex items-start justify-between gap-3">
+                  <h3 className="text-sm font-semibold text-[var(--editor-ink)]">{pitch.name}</h3>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => handleToggleActive(pitch)}
+                      className={`chat-chip ${pitch.is_active ? 'chat-chip--accent' : 'chat-chip--muted'}`}
+                    >
+                      {pitch.is_active ? 'Active' : 'Inactive'}
+                    </button>
+                    <button
+                      onClick={() => {
+                        setEditingId(pitch.id)
+                        setCreating(false)
+                        loadPitchIntoForm(pitch)
+                      }}
+                      className="editor-button-ghost text-xs"
+                    >
+                      Edit
+                    </button>
+                    <button
+                      onClick={() => setPitchToDelete(pitch.id)}
+                      className="editor-button-ghost text-xs text-red-300"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
+                <p className="text-sm text-[var(--editor-ink-muted)] leading-6 mt-3 whitespace-pre-wrap">
+                  {pitch.content}
+                </p>
+              </div>
+            ))}
+          </div>
         )}
       </div>
 
-      {/* Create/Edit Form */}
-      {isFormOpen && (
-        <div className="mb-6 p-5 bg-white rounded-xl border border-gray-200 space-y-4">
-          <h2 className="font-medium text-gray-900">
-            {creating ? 'New Positioning' : 'Edit Positioning'}
-          </h2>
-
-          <div>
-            <label className="block text-xs text-gray-500 mb-1">Name</label>
-            <input
-              type="text"
-              value={name}
-              onChange={e => setName(e.target.value)}
-              placeholder="e.g., Morning Routine Angle"
-              className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs text-gray-500 mb-1">
-              Positioning Content <span className="text-gray-400">(angle / hook / value proposition)</span>
-            </label>
-            <textarea
-              value={content}
-              onChange={e => setContent(e.target.value)}
-              placeholder="Start your day right with a metabolism boost that works while you work. No jitters, no crash - just steady energy and gradual fat burn throughout the day..."
-              rows={6}
-              className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
-
-          <div className="flex gap-2">
-            <button
-              onClick={creating ? handleCreate : handleUpdate}
-              disabled={saving || !name.trim() || !content.trim()}
-              className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 text-sm font-medium disabled:opacity-50 transition-colors"
-            >
-              {saving ? 'Saving...' : creating ? 'Create Positioning' : 'Save Changes'}
-            </button>
-            <button
-              onClick={() => {
-                setCreating(false)
-                setEditingId(null)
-                resetForm()
-              }}
-              className="px-4 py-2 text-gray-600 hover:text-gray-900 text-sm"
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Positioning List */}
-      {loading ? (
-        <p className="text-gray-400">Loading...</p>
-      ) : (
-        <div className="flex-1 overflow-auto space-y-3">
-          {pitches.map(pitch => (
-            <div
-              key={pitch.id}
-              className={`p-4 bg-white rounded-xl border transition-all ${
-                !pitch.is_active ? 'opacity-50 border-gray-100' : 'border-gray-200'
-              } ${editingId === pitch.id ? 'ring-2 ring-blue-100 border-blue-300' : ''}`}
-            >
-              <div className="flex items-start justify-between mb-2">
-                <h3 className="font-medium text-gray-900">{pitch.name}</h3>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => handleToggleActive(pitch)}
-                    className={`text-xs px-2 py-1 rounded ${
-                      pitch.is_active
-                        ? 'text-green-600 hover:bg-green-50'
-                        : 'text-gray-400 hover:bg-gray-100'
-                    }`}
-                  >
-                    {pitch.is_active ? 'Active' : 'Inactive'}
-                  </button>
-                  <button
-                    onClick={() => {
-                      setEditingId(pitch.id)
-                      setCreating(false)
-                      loadPitchIntoForm(pitch)
-                    }}
-                    className="text-sm text-blue-500 hover:text-blue-600"
-                  >
-                    Edit
-                  </button>
-                  <button
-                    onClick={() => handleDelete(pitch.id)}
-                    className="text-sm text-red-500 hover:text-red-600"
-                  >
-                    Delete
-                  </button>
-                </div>
-              </div>
-              <p className="text-sm text-gray-600 whitespace-pre-wrap">{pitch.content}</p>
-            </div>
-          ))}
-
-          {pitches.length === 0 && !creating && (
-            <div className="text-center py-12">
-              <p className="text-gray-400 mb-2">No positioning yet</p>
-              <p className="text-sm text-gray-400">
-                Create positioning entries to define angles for your ad copy
-              </p>
-            </div>
-          )}
-        </div>
-      )}
+      <ConfirmDialog
+        open={Boolean(pitchToDelete)}
+        title="Delete this positioning?"
+        description="This action cannot be undone."
+        confirmLabel="Delete"
+        tone="danger"
+        busy={deletingPitch}
+        onCancel={() => setPitchToDelete(null)}
+        onConfirm={() => {
+          if (!pitchToDelete) return
+          void handleDelete(pitchToDelete).then(() => setPitchToDelete(null))
+        }}
+      />
     </div>
   )
 }

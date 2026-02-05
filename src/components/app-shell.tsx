@@ -162,6 +162,11 @@ export function AppShell({ children }: { children: ReactNode }) {
     { label: 'Users', href: '/admin/users', icon: <UsersIcon /> },
   ]
 
+  const isNavActive = (href: string) => {
+    if (href === '/studio') return pathname === '/studio'
+    return pathname === href || pathname.startsWith(`${href}/`)
+  }
+
   return (
     <AppContext.Provider
       value={{
@@ -225,7 +230,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             )}
             <div className="space-y-1">
               {navItems.map((item) => {
-                const active = pathname === item.href
+                const active = isNavActive(item.href)
                 return (
                   <Link
                     key={item.href}
@@ -273,7 +278,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               {settingsOpen && !sidebarCollapsed && (
                 <div className="mt-2 space-y-1">
                   {settingsItems.map((item) => {
-                    const active = pathname === item.href || pathname.startsWith(item.href + '/')
+                    const active = isNavActive(item.href)
                     return (
                       <Link
                         key={item.href}

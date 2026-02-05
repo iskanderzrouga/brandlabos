@@ -349,6 +349,7 @@ export default function GeneratePage() {
   const [historyVersion, setHistoryVersion] = useState(0)
   const [promptPreview, setPromptPreview] = useState<string | null>(null)
   const [promptPreviewOpen, setPromptPreviewOpen] = useState(false)
+  const [conversationOpen, setConversationOpen] = useState(false)
 
   // Editor
   const [activeTab, setActiveTab] = useState(0)
@@ -1312,6 +1313,7 @@ export default function GeneratePage() {
     setDraftVisibility({})
     setPromptPreviewOpen(false)
     setPromptPreview(null)
+    setConversationOpen(false)
     setThreadHydrating(false)
     historyRef.current = {}
     setHistoryVersion((v) => v + 1)
@@ -1439,9 +1441,21 @@ export default function GeneratePage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ thread_id: threadId, message: fullMessage }),
       })
-
-      const data = await res.json()
-      if (!res.ok) throw new Error(data?.error || 'Agent chat failed')
+      const contentType = res.headers.get('content-type') || ''
+      let data: any = null
+      let rawText = ''
+      if (contentType.includes('application/json')) {
+        data = await res.json().catch(() => null)
+      } else {
+        rawText = await res.text().catch(() => '')
+      }
+      if (!res.ok) {
+        const errorText = data?.error || rawText?.slice(0, 200) || 'Agent chat failed'
+        throw new Error(errorText)
+      }
+      if (!data) {
+        throw new Error('Unexpected response from server')
+      }
 
       const assistantMessage = data.assistant_message
       const draft = extractDraftBlock(assistantMessage)
@@ -1641,10 +1655,52 @@ export default function GeneratePage() {
     </div>
   )
 
+  const conversationModal = conversationOpen && (
+    <div className="fixed inset-0 z-50">
+      <div
+        className="absolute inset-0 bg-black/30 backdrop-blur-sm"
+        onClick={() => setConversationOpen(false)}
+      />
+      <div className="absolute left-6 bottom-24 w-[620px] max-w-[92vw] max-h-[70vh] bg-[var(--editor-panel)] border border-[var(--editor-border)] rounded-2xl shadow-[0_24px_60px_-40px_var(--editor-shadow)] overflow-hidden">
+        <div className="px-4 py-3 border-b border-[var(--editor-border)] flex items-center justify-between">
+          <div>
+            <p className="text-[10px] uppercase tracking-[0.3em] text-[var(--editor-ink-muted)]">
+              Conversation
+            </p>
+            <p className="text-sm font-semibold">Full agent thread</p>
+          </div>
+          <button
+            onClick={() => setConversationOpen(false)}
+            className="editor-button-ghost text-xs"
+          >
+            Close
+          </button>
+        </div>
+        <div className="p-4 overflow-auto max-h-[calc(70vh-3.5rem)] space-y-3">
+          {messages.length === 0 ? (
+            <p className="text-xs text-[var(--editor-ink-muted)]">No messages yet.</p>
+          ) : (
+            messages.map((m, idx) => (
+              <div key={`${m.id || idx}`} className="rounded-2xl border border-[var(--editor-border)] bg-[var(--editor-panel-muted)] p-3">
+                <p className="text-[10px] uppercase tracking-[0.25em] text-[var(--editor-ink-muted)]">
+                  {m.role}
+                </p>
+                <pre className="mt-2 whitespace-pre-wrap text-[12px] leading-5 text-[var(--editor-ink)]">
+                  {m.content}
+                </pre>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  )
+
   if (!threadId && !threadHydrating) {
     return (
       <div className="h-full flex items-center justify-center p-6">
         {promptModal}
+        {conversationModal}
         <div className="editor-panel w-full max-w-2xl p-6">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
             <div>
@@ -1700,7 +1756,8 @@ export default function GeneratePage() {
   return (
     <div className="h-full min-h-0 flex flex-col">
       {promptModal}
-      <div className="flex-1 min-h-0 h-full grid grid-cols-1 lg:grid-cols-[360px_1fr] gap-5 p-5 overflow-hidden">
+      {conversationModal}
+      <div className="flex-1 min-h-0 h-full grid grid-cols-1 lg:grid-cols-[400px_1fr] gap-5 p-5 overflow-hidden">
         {/* Chat */}
         <section className="editor-panel flex flex-col overflow-hidden min-h-0">
           <div className="px-4 py-3 border-b border-[var(--editor-border)] bg-[var(--editor-panel)]/70">
@@ -1945,7 +2002,23 @@ export default function GeneratePage() {
                       className="editor-input w-full text-[13px] leading-5 resize-none"
                     />
                   </div>
-                  <div className="flex justify-end">
+                  <div className="flex items-center justify-between">
+                    <button
+                      type="button"
+                      onClick={() => setConversationOpen(true)}
+                      className="editor-icon-ghost"
+                      aria-label="View conversation"
+                      title="View conversation"
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4" aria-hidden="true">
+                        <path
+                          d="M4 5h12a3 3 0 013 3v8a3 3 0 01-3 3H9l-5 4V8a3 3 0 013-3z"
+                          stroke="currentColor"
+                          strokeWidth="1.8"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                    </button>
                     <button
                       type="submit"
                       className="editor-icon-button"

@@ -22,6 +22,14 @@ export default function SwipesPage() {
   const [swipes, setSwipes] = useState<SwipeRow[]>([])
   const [ingestUrl, setIngestUrl] = useState('')
   const [ingesting, setIngesting] = useState(false)
+  const [manualOpen, setManualOpen] = useState(false)
+  const [manualTitle, setManualTitle] = useState('')
+  const [manualText, setManualText] = useState('')
+  const [manualAvatarId, setManualAvatarId] = useState('')
+  const [manualPositioningId, setManualPositioningId] = useState('')
+  const [avatars, setAvatars] = useState<Array<{ id: string; name: string }>>([])
+  const [pitches, setPitches] = useState<Array<{ id: string; name: string }>>([])
+  const [savingManual, setSavingManual] = useState(false)
 
   const filtered = useMemo(() => {
     const query = q.trim().toLowerCase()
@@ -60,6 +68,30 @@ export default function SwipesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedProduct])
 
+  useEffect(() => {
+    let active = true
+    const run = async () => {
+      if (!selectedProduct) {
+        setAvatars([])
+        setPitches([])
+        return
+      }
+      const [aRes, pRes] = await Promise.all([
+        fetch(`/api/avatars?product_id=${selectedProduct}`),
+        fetch(`/api/pitches?product_id=${selectedProduct}&active_only=true`),
+      ])
+      if (!active) return
+      const a = await aRes.json().catch(() => [])
+      const p = await pRes.json().catch(() => [])
+      setAvatars(Array.isArray(a) ? a : [])
+      setPitches(Array.isArray(p) ? p : [])
+    }
+    run()
+    return () => {
+      active = false
+    }
+  }, [selectedProduct])
+
   async function ingest() {
     if (!selectedProduct) return
     const url = ingestUrl.trim()
@@ -79,6 +111,38 @@ export default function SwipesPage() {
       alert(err instanceof Error ? err.message : 'Failed to ingest')
     } finally {
       setIngesting(false)
+    }
+  }
+
+  async function createManualSwipe() {
+    if (!selectedProduct) return
+    const transcript = manualText.trim()
+    if (!transcript) return
+    setSavingManual(true)
+    try {
+      const res = await fetch('/api/swipes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          product_id: selectedProduct,
+          transcript,
+          title: manualTitle.trim(),
+          avatar_id: manualAvatarId || null,
+          positioning_id: manualPositioningId || null,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data?.error || 'Failed to save swipe')
+      setManualTitle('')
+      setManualText('')
+      setManualAvatarId('')
+      setManualPositioningId('')
+      setManualOpen(false)
+      await load()
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to save swipe')
+    } finally {
+      setSavingManual(false)
     }
   }
 
@@ -123,22 +187,108 @@ export default function SwipesPage() {
             </p>
           </div>
 
-          <div className="editor-panel p-4 flex flex-col sm:flex-row gap-3 w-full md:w-auto">
-            <input
-              value={ingestUrl}
-              onChange={(e) => setIngestUrl(e.target.value)}
-              placeholder="Paste Meta Ad Library URL..."
-              className="editor-input text-sm w-full sm:w-[380px]"
-            />
+          <div className="editor-panel p-4 flex flex-col gap-3 w-full md:w-auto">
+            <div className="flex flex-col sm:flex-row gap-3">
+              <input
+                value={ingestUrl}
+                onChange={(e) => setIngestUrl(e.target.value)}
+                placeholder="Paste Meta Ad Library URL..."
+                className="editor-input text-sm w-full sm:w-[360px]"
+              />
+              <button
+                onClick={ingest}
+                disabled={ingesting || !ingestUrl.trim()}
+                className="editor-button"
+              >
+                {ingesting ? 'Saving...' : 'Ingest'}
+              </button>
+            </div>
             <button
-              onClick={ingest}
-              disabled={ingesting || !ingestUrl.trim()}
-              className="editor-button"
+              onClick={() => setManualOpen((v) => !v)}
+              className="editor-button-ghost text-xs"
             >
-              {ingesting ? 'Saving...' : 'Ingest'}
+              {manualOpen ? 'Close Manual Swipe' : 'Add Manual Swipe'}
             </button>
           </div>
         </div>
+
+        {manualOpen && (
+          <div className="editor-panel p-5 mb-6">
+            <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
+              <div className="flex-1 space-y-3">
+                <div>
+                  <label className="block text-xs uppercase tracking-[0.22em] text-[var(--editor-ink-muted)] mb-2">
+                    Optional name
+                  </label>
+                  <input
+                    value={manualTitle}
+                    onChange={(e) => setManualTitle(e.target.value)}
+                    placeholder="Leave blank to auto-name"
+                    className="editor-input text-sm w-full"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs uppercase tracking-[0.22em] text-[var(--editor-ink-muted)] mb-2">
+                    Transcript / notes
+                  </label>
+                  <textarea
+                    value={manualText}
+                    onChange={(e) => setManualText(e.target.value)}
+                    placeholder="Paste swipe text here..."
+                    rows={6}
+                    className="editor-input text-sm w-full resize-none"
+                  />
+                </div>
+              </div>
+              <div className="w-full md:w-64 space-y-3">
+                <div>
+                  <label className="block text-xs uppercase tracking-[0.22em] text-[var(--editor-ink-muted)] mb-2">
+                    Avatar (optional)
+                  </label>
+                  <select
+                    value={manualAvatarId}
+                    onChange={(e) => setManualAvatarId(e.target.value)}
+                    className="editor-input text-sm w-full"
+                  >
+                    <option value="">None</option>
+                    {avatars.map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs uppercase tracking-[0.22em] text-[var(--editor-ink-muted)] mb-2">
+                    Angle (optional)
+                  </label>
+                  <select
+                    value={manualPositioningId}
+                    onChange={(e) => setManualPositioningId(e.target.value)}
+                    className="editor-input text-sm w-full"
+                  >
+                    <option value="">None</option>
+                    {pitches.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <button
+                  onClick={createManualSwipe}
+                  disabled={savingManual || !manualText.trim()}
+                  className="editor-button w-full"
+                >
+                  {savingManual ? 'Saving...' : 'Save Swipe'}
+                </button>
+                <p className="text-[11px] text-[var(--editor-ink-muted)]">
+                  Auto-name uses 3-5 words with hyphens.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="editor-panel p-5 mb-6">
           <p className="text-[11px] uppercase tracking-[0.22em] text-[var(--editor-ink-muted)]">

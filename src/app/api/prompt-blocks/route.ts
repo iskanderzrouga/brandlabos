@@ -56,6 +56,30 @@ export async function POST(request: NextRequest) {
     }
 
     const scopeIdValue = validated.data.scope_id ?? null
+    const metadataKey =
+      typeof validated.data.metadata?.key === 'string' ? validated.data.metadata.key : null
+
+    if (metadataKey) {
+      if (scopeIdValue) {
+        await sql`
+          UPDATE prompt_blocks
+          SET is_active = false
+          WHERE scope = ${validated.data.scope}
+            AND scope_id = ${scopeIdValue}
+            AND (metadata->>'key') = ${metadataKey}
+            AND is_active = true
+        `
+      } else {
+        await sql`
+          UPDATE prompt_blocks
+          SET is_active = false
+          WHERE scope = ${validated.data.scope}
+            AND scope_id IS NULL
+            AND (metadata->>'key') = ${metadataKey}
+            AND is_active = true
+        `
+      }
+    }
 
     const existingRows = scopeIdValue
       ? await sql`

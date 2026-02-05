@@ -31,6 +31,7 @@ async function loadGlobalPromptBlocks(): Promise<Map<string, PromptBlockRow>> {
     FROM prompt_blocks
     WHERE is_active = true
       AND scope = 'global'
+    ORDER BY updated_at ASC, created_at ASC
   ` as PromptBlockRow[]
 
   const map = new Map<string, PromptBlockRow>()

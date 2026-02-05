@@ -56,6 +56,35 @@ export async function PATCH(request: NextRequest, { params }: Params) {
 
     // If content is changing, create a new version instead of updating
     if (validated.data.content && validated.data.content !== existing.content) {
+      const metadataKey =
+        typeof (validated.data.metadata as { key?: string } | undefined)?.key === 'string'
+          ? (validated.data.metadata as { key?: string }).key
+          : typeof (existing.metadata as { key?: string } | undefined)?.key === 'string'
+            ? (existing.metadata as { key?: string }).key
+            : null
+
+      if (metadataKey) {
+        if (existing.scope_id) {
+          await sql`
+            UPDATE prompt_blocks
+            SET is_active = false
+            WHERE scope = ${existing.scope}
+              AND scope_id = ${existing.scope_id}
+              AND (metadata->>'key') = ${metadataKey}
+              AND is_active = true
+          `
+        } else {
+          await sql`
+            UPDATE prompt_blocks
+            SET is_active = false
+            WHERE scope = ${existing.scope}
+              AND scope_id IS NULL
+              AND (metadata->>'key') = ${metadataKey}
+              AND is_active = true
+          `
+        }
+      }
+
       // Deactivate current version
       await sql`
         UPDATE prompt_blocks

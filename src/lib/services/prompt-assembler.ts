@@ -72,6 +72,7 @@ export class PromptAssembler {
       FROM prompt_blocks
       WHERE is_active = true
         AND scope = 'global'
+      ORDER BY updated_at ASC, created_at ASC
     ` as PromptBlock[]
 
     // Store blocks by metadata.key for easy lookup

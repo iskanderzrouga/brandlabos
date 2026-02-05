@@ -147,6 +147,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     { label: 'Agent', href: '/studio', icon: <SparkIcon /> },
     { label: 'Avatars', href: '/studio/avatars', icon: <AvatarIcon /> },
     { label: 'Agents', href: '/studio/agents', icon: <AgentsIcon /> },
+    { label: 'Positioning', href: '/studio/pitches', icon: <TargetIcon /> },
     { label: 'Research', href: '/studio/research', icon: <SearchIcon /> },
     { label: 'Swipes', href: '/studio/swipes', icon: <FilmIcon /> },
     { label: 'Library', href: '/studio/library', icon: <LibraryIcon /> },
@@ -575,6 +576,19 @@ function SearchIcon() {
         strokeWidth="1.8"
         strokeLinecap="round"
       />
+    </svg>
+  )
+}
+
+function TargetIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5" aria-hidden="true">
+      <circle cx="12" cy="12" r="7" stroke="currentColor" strokeWidth="1.8" />
+      <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M12 2v3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M12 19v3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M2 12h3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M19 12h3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
     </svg>
   )
 }

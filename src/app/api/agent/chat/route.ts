@@ -31,6 +31,9 @@ type ToolUseBlock = {
 const AGENT_MODEL = 'claude-opus-4-6'
 const CONTEXT_MAX_MESSAGES = 14
 const CONTEXT_MAX_CHARS = 24000
+const AGENT_MAX_STEPS = 3
+const AGENT_MAX_TOKENS = 1400
+const AGENT_CALL_TIMEOUT_MS = 18000
 
 function isToolUseBlock(block: unknown): block is ToolUseBlock {
   return (
@@ -189,6 +192,20 @@ function buildAgentContextMessages(historyRows: Array<{ role: string; content: s
   }
 
   return recent.reverse()
+}
+
+function shouldEnableTools(messageText: string, threadContext: ThreadContext) {
+  if (threadContext.active_swipe_id) return true
+  if (Array.isArray(threadContext.research_ids) && threadContext.research_ids.length > 0) return true
+  const text = messageText.toLowerCase()
+  return (
+    text.includes('facebook.com/ads/library') ||
+    text.includes('meta ad') ||
+    text.includes('ad library') ||
+    text.includes('swipe') ||
+    text.includes('transcript') ||
+    text.includes('ingest')
+  )
 }
 
 async function ingestMetaSwipe(args: { productId: string; url: string; userId: string }) {
@@ -419,7 +436,11 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'ANTHROPIC_API_KEY is not set' }, { status: 500 })
     }
 
-    const anthropic = new Anthropic({ apiKey: anthropicKey })
+    const anthropic = new Anthropic({
+      apiKey: anthropicKey,
+      timeout: AGENT_CALL_TIMEOUT_MS,
+      maxRetries: 1,
+    })
 
     const model = AGENT_MODEL
 
@@ -542,18 +563,27 @@ export async function POST(request: NextRequest) {
       return { error: `Unknown tool: ${toolUse.name}` }
     }
 
+    const activeTools = shouldEnableTools(messageText, threadContext) ? tools : undefined
+
+    const loopStartedAt = Date.now()
+
     // Agent loop with tool calling.
-    const maxSteps = 6
+    const maxSteps = activeTools ? AGENT_MAX_STEPS : 1
     let assistantText = ''
     let workingMessages: any[] = messages
 
     for (let step = 0; step < maxSteps; step += 1) {
+      if (Date.now() - loopStartedAt > AGENT_CALL_TIMEOUT_MS) {
+        console.warn('Agent loop budget exceeded', { threadId, step, model })
+        break
+      }
+
       const resp = await anthropic.messages.create({
         model,
-        max_tokens: 2200,
+        max_tokens: AGENT_MAX_TOKENS,
         system,
         messages: workingMessages,
-        tools,
+        ...(activeTools ? { tools: activeTools } : {}),
       })
 
       const content = resp.content || []
@@ -569,7 +599,7 @@ export async function POST(request: NextRequest) {
       // call has the proper tool_use ids in context.
       workingMessages = workingMessages.concat([{ role: 'assistant', content }])
 
-      if (toolUses.length === 0) break
+      if (!activeTools || toolUses.length === 0) break
 
       for (const tu of toolUses) {
         const result = await runTool(tu)

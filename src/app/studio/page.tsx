@@ -308,7 +308,7 @@ function makeSkillKey(name: string) {
 }
 
 export default function GeneratePage() {
-  const { selectedProduct, openContextDrawer, setContextDrawerExtra } = useAppContext()
+  const { selectedProduct, openContextDrawer, setContextDrawerExtra, setTopBarExtra } = useAppContext()
 
   const [threadId, setThreadId] = useState<string | null>(null)
   const [threadContext, setThreadContext] = useState<ThreadContext>({})
@@ -347,6 +347,8 @@ export default function GeneratePage() {
   const [highlightState, setHighlightState] = useState<{ tab: number; start: number; end: number } | null>(null)
   const [flashActive, setFlashActive] = useState(false)
   const [historyVersion, setHistoryVersion] = useState(0)
+  const [promptPreview, setPromptPreview] = useState<string | null>(null)
+  const [promptPreviewOpen, setPromptPreviewOpen] = useState(false)
 
   // Editor
   const [activeTab, setActiveTab] = useState(0)
@@ -406,12 +408,6 @@ export default function GeneratePage() {
       return bTime - aTime
     })
   }, [threads])
-
-  const attachedResearch = useMemo(() => {
-    if (researchIds.length === 0) return []
-    const set = new Set(researchIds)
-    return researchItems.filter((item) => set.has(item.id))
-  }, [researchItems, researchIds])
 
   // Keep canvas tab count in sync with versions
   useEffect(() => {
@@ -594,7 +590,7 @@ export default function GeneratePage() {
     const swipeParam = params.get('swipe')
     if (!swipeParam) return
     setThreadContext((prev) => ({ ...prev, active_swipe_id: swipeParam }))
-  }, [threadId])
+  }, [threadId, skill, versions, avatarIds, positioningId, activeSwipeId, researchIds])
 
   // Persist thread context (debounced)
   useEffect(() => {
@@ -714,6 +710,65 @@ export default function GeneratePage() {
   useEffect(() => {
     refreshSkills()
   }, [refreshSkills])
+
+  useEffect(() => {
+    let cancelled = false
+    const handle = setTimeout(() => {
+      if (cancelled) return
+      const run = async () => {
+        if (!threadId) {
+          setPromptPreview(null)
+          return
+        }
+        const res = await fetch(`/api/agent/threads/${threadId}/prompt`)
+        if (!res.ok) {
+          if (!cancelled) setPromptPreview(null)
+          return
+        }
+        const data = await res.json().catch(() => ({}))
+        if (!cancelled) {
+          setPromptPreview(typeof data?.prompt === 'string' ? data.prompt : null)
+        }
+      }
+      run()
+    }, 450)
+    return () => {
+      cancelled = true
+      clearTimeout(handle)
+    }
+  }, [threadId, skill, versions, avatarIds, positioningId, activeSwipeId, researchIds])
+
+  useEffect(() => {
+    if (!threadId) {
+      setTopBarExtra(null)
+      return
+    }
+    setTopBarExtra(
+      <button
+        type="button"
+        onClick={() => setPromptPreviewOpen(true)}
+        className="editor-icon-ghost"
+        aria-label="View compiled agent prompt"
+        title="View compiled agent prompt"
+      >
+        <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4" aria-hidden="true">
+          <path
+            d="M4.5 4.5h11a2 2 0 012 2v10.5l-3-2.5H6.5a2 2 0 01-2-2v-8a2 2 0 012-2z"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinejoin="round"
+          />
+          <path
+            d="M8 9h7M8 12.5h5"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+          />
+        </svg>
+      </button>
+    )
+    return () => setTopBarExtra(null)
+  }, [threadId, setTopBarExtra])
 
   // Poll active swipe status until ready/failed
   useEffect(() => {
@@ -1094,37 +1149,51 @@ export default function GeneratePage() {
             </a>
           </div>
 
-          {attachedResearch.length === 0 ? (
-            <p className="text-xs text-[var(--editor-ink-muted)]">
-              No research attached yet.
-            </p>
-          ) : (
-            <div className="space-y-2">
-              {attachedResearch.map((item) => (
-                <div
-                  key={item.id}
-                  className="flex items-center justify-between gap-2 rounded-2xl border border-[var(--editor-border)] bg-[var(--editor-panel-muted)] px-3 py-2"
-                >
-                  <span className="text-xs text-[var(--editor-ink)] truncate">
-                    {item.title || 'Untitled research'}
-                  </span>
+          <div className="space-y-2">
+            {researchItems.length === 0 ? (
+              <p className="text-xs text-[var(--editor-ink-muted)]">
+                No research yet. Add some in the Research tab.
+              </p>
+            ) : (
+              researchItems.map((item) => {
+                const selected = researchIds.includes(item.id)
+                return (
                   <button
+                    key={item.id}
                     onClick={() =>
                       setThreadContext((prev) => ({
                         ...prev,
-                        research_ids: (Array.isArray(prev.research_ids) ? prev.research_ids : []).filter(
-                          (id) => id !== item.id
-                        ),
+                        research_ids: selected
+                          ? (Array.isArray(prev.research_ids) ? prev.research_ids : []).filter(
+                              (id) => id !== item.id
+                            )
+                          : [...(Array.isArray(prev.research_ids) ? prev.research_ids : []), item.id],
                       }))
                     }
-                    className="text-[11px] text-[var(--editor-ink-muted)] underline underline-offset-4"
+                    className={`w-full text-left rounded-2xl border px-3 py-2 text-xs transition-colors ${
+                      selected
+                        ? 'border-[var(--editor-accent)] text-[var(--editor-ink)] bg-[var(--editor-accent-soft)]'
+                        : 'border-[var(--editor-border)] text-[var(--editor-ink-muted)] hover:text-[var(--editor-ink)]'
+                    }`}
                   >
-                    Remove
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="truncate">
+                        {item.title || 'Untitled research'}
+                      </span>
+                      <span className="text-[10px] uppercase tracking-[0.18em] text-[var(--editor-ink-muted)]">
+                        {selected ? 'Attached' : 'Add'}
+                      </span>
+                    </div>
+                    {item.summary && (
+                      <p className="text-[11px] text-[var(--editor-ink-muted)] mt-1 line-clamp-2">
+                        {item.summary}
+                      </p>
+                    )}
                   </button>
-                </div>
-              ))}
-            </div>
-          )}
+                )
+              })
+            )}
+          </div>
         </div>
       </div>
     )
@@ -1152,7 +1221,8 @@ export default function GeneratePage() {
     pitches,
     swipes,
     activeSwipe,
-    attachedResearch,
+    researchItems,
+    researchIds,
     saveCustomSkill,
     resetSkillBuilder,
   ])
@@ -1240,6 +1310,8 @@ export default function GeneratePage() {
     setHighlightState(null)
     setFlashActive(false)
     setDraftVisibility({})
+    setPromptPreviewOpen(false)
+    setPromptPreview(null)
     setThreadHydrating(false)
     historyRef.current = {}
     setHistoryVersion((v) => v + 1)
@@ -1341,6 +1413,7 @@ export default function GeneratePage() {
     setActiveSelectionId(null)
     clearSelection()
     setMessages((prev) => [...prev, { role: 'user', content: fullMessage }])
+    setPromptPreviewOpen(false)
     if (text) {
       const derived = deriveThreadTitleFromMessage(text)
       if (derived) {
@@ -1534,9 +1607,44 @@ export default function GeneratePage() {
     )
   }
 
+  const promptModal = promptPreviewOpen && (
+    <div className="fixed inset-0 z-50">
+      <div
+        className="absolute inset-0 bg-black/30 backdrop-blur-sm"
+        onClick={() => setPromptPreviewOpen(false)}
+      />
+      <div className="absolute right-6 top-20 w-[620px] max-w-[92vw] max-h-[80vh] bg-[var(--editor-panel)] border border-[var(--editor-border)] rounded-2xl shadow-[0_24px_60px_-40px_var(--editor-shadow)] overflow-hidden">
+        <div className="px-4 py-3 border-b border-[var(--editor-border)] flex items-center justify-between">
+          <div>
+            <p className="text-[10px] uppercase tracking-[0.3em] text-[var(--editor-ink-muted)]">
+              Agent Prompt
+            </p>
+            <p className="text-sm font-semibold">Compiled context</p>
+          </div>
+          <button
+            onClick={() => setPromptPreviewOpen(false)}
+            className="editor-button-ghost text-xs"
+          >
+            Close
+          </button>
+        </div>
+        <div className="p-4 overflow-auto max-h-[calc(80vh-3.5rem)]">
+          {promptPreview ? (
+            <pre className="whitespace-pre-wrap text-[12px] leading-5 text-[var(--editor-ink)]">
+              {promptPreview}
+            </pre>
+          ) : (
+            <p className="text-xs text-[var(--editor-ink-muted)]">No prompt preview available.</p>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+
   if (!threadId && !threadHydrating) {
     return (
       <div className="h-full flex items-center justify-center p-6">
+        {promptModal}
         <div className="editor-panel w-full max-w-2xl p-6">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
             <div>
@@ -1591,6 +1699,7 @@ export default function GeneratePage() {
 
   return (
     <div className="h-full min-h-0 flex flex-col">
+      {promptModal}
       <div className="flex-1 min-h-0 h-full grid grid-cols-1 lg:grid-cols-[360px_1fr] gap-5 p-5 overflow-hidden">
         {/* Chat */}
         <section className="editor-panel flex flex-col overflow-hidden min-h-0">

@@ -23,6 +23,7 @@ interface AppContextType {
   signOut: () => Promise<void>
   openContextDrawer: () => void
   setContextDrawerExtra: (extra: ReactNode | null) => void
+  setTopBarExtra: (extra: ReactNode | null) => void
 }
 
 interface Org { id: string; name: string; slug: string }
@@ -58,6 +59,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [contextDrawerOpen, setContextDrawerOpen] = useState(false)
   const [contextDrawerExtra, setContextDrawerExtra] = useState<ReactNode | null>(null)
+  const [topBarExtra, setTopBarExtra] = useState<ReactNode | null>(null)
 
   // Fetch user on mount
   useEffect(() => {
@@ -143,6 +145,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   const navItems = [
     { label: 'Agent', href: '/studio', icon: <SparkIcon /> },
+    { label: 'Avatars', href: '/studio/avatars', icon: <AvatarIcon /> },
     { label: 'Agents', href: '/studio/agents', icon: <AgentsIcon /> },
     { label: 'Research', href: '/studio/research', icon: <SearchIcon /> },
     { label: 'Swipes', href: '/studio/swipes', icon: <FilmIcon /> },
@@ -169,14 +172,15 @@ export function AppShell({ children }: { children: ReactNode }) {
         selectedProduct,
         setSelectedOrg,
         setSelectedBrand,
-        setSelectedProduct,
-        loading,
-        user,
-        signOut,
-        openContextDrawer: () => setContextDrawerOpen(true),
-        setContextDrawerExtra,
-      }}
-    >
+      setSelectedProduct,
+      loading,
+      user,
+      signOut,
+      openContextDrawer: () => setContextDrawerOpen(true),
+      setContextDrawerExtra,
+      setTopBarExtra,
+    }}
+  >
       <div className="h-[100dvh] min-h-0 bg-[var(--editor-bg)] text-[var(--editor-ink)] flex">
         {/* Sidebar */}
         <aside
@@ -342,6 +346,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             </button>
 
             <div className="flex-1" />
+            {topBarExtra}
           </header>
 
           {/* Page Content */}
@@ -486,6 +491,20 @@ function AgentsIcon() {
         strokeWidth="1.5"
         strokeLinecap="round"
         strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
+function AvatarIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5" aria-hidden="true">
+      <circle cx="12" cy="8" r="3.4" stroke="currentColor" strokeWidth="1.8" />
+      <path
+        d="M5 20a7 7 0 0114 0"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
       />
     </svg>
   )

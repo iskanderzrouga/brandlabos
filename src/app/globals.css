@@ -111,6 +111,58 @@ body > div {
   box-shadow: 0 0 0 3px rgba(0, 191, 166, 0.18);
 }
 
+.editor-message {
+  font-size: 13px;
+  line-height: 1.6;
+  font-weight: 500;
+  color: inherit;
+}
+
+.editor-message p {
+  margin: 0;
+}
+
+.editor-message p + p {
+  margin-top: 0.6rem;
+}
+
+.editor-message ul,
+.editor-message ol {
+  margin: 0.4rem 0 0.2rem;
+  padding-left: 1.25rem;
+}
+
+.editor-message li + li {
+  margin-top: 0.2rem;
+}
+
+.editor-message hr {
+  border: none;
+  border-top: 1px solid var(--editor-border);
+  margin: 0.65rem 0;
+}
+
+.editor-message code {
+  font-family: var(--font-editor-mono), ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.85em;
+  background: var(--editor-panel-muted);
+  padding: 0.1rem 0.3rem;
+  border-radius: 6px;
+}
+
+.editor-message pre {
+  background: var(--editor-panel-muted);
+  padding: 0.7rem;
+  border-radius: 12px;
+  overflow: auto;
+  font-size: 0.85em;
+}
+
+.editor-message pre code {
+  background: none;
+  padding: 0;
+}
+
 .editor-flash {
   animation: editorFlash 1.2s ease;
 }

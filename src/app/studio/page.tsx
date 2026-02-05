@@ -135,6 +135,147 @@ function isMetaAdLibraryUrlCandidate(text: string) {
   return /facebook\.com\/ads\/library\//i.test(text)
 }
 
+function renderInline(text: string, keyPrefix: string) {
+  const parts = text.split(/(`[^`]+`)/g)
+  const out: React.ReactNode[] = []
+  parts.forEach((part, idx) => {
+    if (!part) return
+    if (part.startsWith('`') && part.endsWith('`')) {
+      out.push(
+        <code key={`${keyPrefix}-code-${idx}`}>{part.slice(1, -1)}</code>
+      )
+      return
+    }
+    const regex = /(\*\*[^*]+\*\*|\*[^*]+\*)/g
+    let last = 0
+    let match: RegExpExecArray | null
+    while ((match = regex.exec(part))) {
+      if (match.index > last) {
+        out.push(part.slice(last, match.index))
+      }
+      const token = match[0]
+      if (token.startsWith('**')) {
+        out.push(
+          <strong key={`${keyPrefix}-bold-${match.index}`}>{token.slice(2, -2)}</strong>
+        )
+      } else {
+        out.push(
+          <em key={`${keyPrefix}-em-${match.index}`}>{token.slice(1, -1)}</em>
+        )
+      }
+      last = match.index + token.length
+    }
+    if (last < part.length) {
+      out.push(part.slice(last))
+    }
+  })
+  return out
+}
+
+function renderParagraph(text: string, key: string) {
+  const lines = text.split('\n')
+  return (
+    <p key={key}>
+      {lines.map((line, idx) => (
+        <span key={`${key}-line-${idx}`}>
+          {renderInline(line, `${key}-inline-${idx}`)}
+          {idx < lines.length - 1 && <br />}
+        </span>
+      ))}
+    </p>
+  )
+}
+
+function renderMarkdownBlocks(text: string) {
+  if (!text) return null
+  const lines = text.replace(/\r\n/g, '\n').split('\n')
+  const blocks: React.ReactNode[] = []
+  let i = 0
+  let blockIndex = 0
+
+  while (i < lines.length) {
+    const line = lines[i]
+    if (line.trim() === '') {
+      i += 1
+      continue
+    }
+
+    if (line.trim().startsWith('```')) {
+      const codeLines: string[] = []
+      i += 1
+      while (i < lines.length && !lines[i].trim().startsWith('```')) {
+        codeLines.push(lines[i])
+        i += 1
+      }
+      i += 1
+      blocks.push(
+        <pre key={`code-${blockIndex}`}>
+          <code>{codeLines.join('\n')}</code>
+        </pre>
+      )
+      blockIndex += 1
+      continue
+    }
+
+    if (/^---+$/.test(line.trim())) {
+      blocks.push(<hr key={`hr-${blockIndex}`} />)
+      blockIndex += 1
+      i += 1
+      continue
+    }
+
+    if (/^\s*([-*+])\s+/.test(line)) {
+      const items: string[] = []
+      while (i < lines.length && /^\s*([-*+])\s+/.test(lines[i])) {
+        items.push(lines[i].replace(/^\s*([-*+])\s+/, ''))
+        i += 1
+      }
+      blocks.push(
+        <ul key={`ul-${blockIndex}`}>
+          {items.map((item, idx) => (
+            <li key={`ul-${blockIndex}-${idx}`}>{renderInline(item, `ul-${blockIndex}-${idx}`)}</li>
+          ))}
+        </ul>
+      )
+      blockIndex += 1
+      continue
+    }
+
+    if (/^\s*\d+[.)]\s+/.test(line)) {
+      const items: string[] = []
+      while (i < lines.length && /^\s*\d+[.)]\s+/.test(lines[i])) {
+        items.push(lines[i].replace(/^\s*\d+[.)]\s+/, ''))
+        i += 1
+      }
+      blocks.push(
+        <ol key={`ol-${blockIndex}`}>
+          {items.map((item, idx) => (
+            <li key={`ol-${blockIndex}-${idx}`}>{renderInline(item, `ol-${blockIndex}-${idx}`)}</li>
+          ))}
+        </ol>
+      )
+      blockIndex += 1
+      continue
+    }
+
+    const paraLines: string[] = []
+    while (
+      i < lines.length &&
+      lines[i].trim() !== '' &&
+      !lines[i].trim().startsWith('```') &&
+      !/^\s*([-*+])\s+/.test(lines[i]) &&
+      !/^\s*\d+[.)]\s+/.test(lines[i])
+    ) {
+      paraLines.push(lines[i])
+      i += 1
+    }
+    blocks.push(renderParagraph(paraLines.join('\n'), `p-${blockIndex}`))
+    blockIndex += 1
+  }
+
+  return blocks
+}
+
 function computeDiffRange(oldText: string, newText: string) {
   if (oldText === newText) return null
   const minLen = Math.min(oldText.length, newText.length)
@@ -1515,9 +1656,9 @@ export default function GeneratePage() {
                           }`}
                         >
                           {draftParts.before && (
-                            <pre className="whitespace-pre-wrap font-sans text-[12px] leading-5 font-medium">
-                              {draftParts.before}
-                            </pre>
+                            <div className="editor-message">
+                              {renderMarkdownBlocks(draftParts.before)}
+                            </div>
                           )}
 
                           {draft && (
@@ -1540,9 +1681,9 @@ export default function GeneratePage() {
                               </div>
 
                               {showDraft && (
-                                <pre className="whitespace-pre-wrap font-sans text-[12px] leading-5 font-medium mt-2">
-                                  {draft}
-                                </pre>
+                                <div className="editor-message mt-2">
+                                  {renderMarkdownBlocks(draft)}
+                                </div>
                               )}
 
                               <div className="mt-3 flex items-center gap-2">
@@ -1570,9 +1711,9 @@ export default function GeneratePage() {
                           )}
 
                           {draftParts.after && (
-                            <pre className="whitespace-pre-wrap font-sans text-[12px] leading-5 font-medium mt-3">
-                              {draftParts.after}
-                            </pre>
+                            <div className="editor-message mt-3">
+                              {renderMarkdownBlocks(draftParts.after)}
+                            </div>
                           )}
                         </div>
                       </div>
@@ -1748,7 +1889,7 @@ export default function GeneratePage() {
                   : 'Create an asset to start drafting.'
               }
               disabled={!threadId}
-              className={`w-full h-full min-h-[520px] p-5 rounded-2xl border border-[var(--editor-border)] bg-[var(--editor-canvas)] text-[14px] leading-7 text-[var(--editor-ink)] focus:outline-none focus:ring-2 focus:ring-[var(--editor-accent)] resize-none ${
+              className={`w-full h-full min-h-[520px] p-5 rounded-2xl border border-[var(--editor-border)] bg-[var(--editor-canvas)] text-[13px] leading-6 text-[var(--editor-ink)] focus:outline-none focus:ring-2 focus:ring-[var(--editor-accent)] resize-none ${
                 flashActive && highlightState?.tab === activeTab ? 'editor-flash' : ''
               }`}
             />

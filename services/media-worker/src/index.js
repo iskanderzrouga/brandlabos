@@ -180,6 +180,7 @@ async function loadGlobalPromptBlocks() {
     FROM prompt_blocks
     WHERE is_active = true
       AND scope = 'global'
+    ORDER BY updated_at DESC NULLS LAST, version DESC, created_at DESC
   `
   )
   const map = new Map()
@@ -193,7 +194,7 @@ async function loadGlobalPromptBlocks() {
       }
     }
     const key = meta?.key || row?.type
-    if (key) map.set(key, row.content)
+    if (key && !map.has(key)) map.set(key, row.content)
   }
   return map
 }
@@ -270,6 +271,38 @@ async function runCommand(cmd, args, opts = {}) {
   })
 }
 
+function decodeEscapedUrl(value) {
+  return String(value || '')
+    .replace(/\\\//g, '/')
+    .replace(/\\u0025/gi, '%')
+    .replace(/\\u0026/gi, '&')
+    .replace(/\\u003d/gi, '=')
+    .replace(/\\u003f/gi, '?')
+    .replace(/\\u003a/gi, ':')
+    .replace(/\\u002f/gi, '/')
+}
+
+function scoreVideoCandidate(candidate) {
+  const url = String(candidate?.url || '')
+  const contentType = String(candidate?.contentType || '').toLowerCase()
+  const contentLength = Number(candidate?.contentLength || 0)
+  let score = 0
+
+  if (/\.mp4(\?|$)/i.test(url)) score += 60
+  if (/\.m3u8(\?|$)/i.test(url)) score += 50
+  if (contentType.startsWith('video/')) score += 35
+  if (contentType.includes('mp4')) score += 20
+  if (contentType.includes('mpegurl') || contentType.includes('x-mpegurl')) score += 20
+  if (/hd|high/i.test(url)) score += 8
+  if (/sd/i.test(url)) score -= 2
+
+  if (Number.isFinite(contentLength) && contentLength > 0) {
+    score += Math.min(22, Math.log10(contentLength + 1) * 4)
+  }
+
+  return score
+}
+
 async function scrapeMetaAdVideo(url) {
   const userAgent =
     'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
@@ -286,15 +319,41 @@ async function scrapeMetaAdVideo(url) {
   })
 
   const candidates = []
+  const seen = new Set()
+  const pushCandidate = (candidate) => {
+    const normalizedUrl = decodeEscapedUrl(candidate?.url || '').trim()
+    if (!normalizedUrl || seen.has(normalizedUrl)) return
+    seen.add(normalizedUrl)
+    const kind = /\.m3u8(\?|$)/i.test(normalizedUrl) ? 'hls' : 'mp4'
+    const next = {
+      url: normalizedUrl,
+      source: candidate?.source || 'unknown',
+      contentType: candidate?.contentType || '',
+      contentLength: Number(candidate?.contentLength || 0) || 0,
+      kind,
+    }
+    next.score = scoreVideoCandidate(next)
+    candidates.push(next)
+  }
+
   page.on('response', async (res) => {
     try {
-      const u = res.url()
+      const responseUrl = res.url()
       const headers = res.headers()
       const ct = headers['content-type'] || ''
       const len = Number(headers['content-length'] || 0) || 0
-      const looksVideo = ct.startsWith('video/') || /\.mp4(\?|$)/i.test(u)
+      const looksVideo =
+        ct.startsWith('video/') ||
+        ct.includes('mpegurl') ||
+        /\.mp4(\?|$)/i.test(responseUrl) ||
+        /\.m3u8(\?|$)/i.test(responseUrl)
       if (!looksVideo) return
-      candidates.push({ url: u, contentLength: len })
+      pushCandidate({
+        url: responseUrl,
+        source: 'network',
+        contentType: ct,
+        contentLength: len,
+      })
     } catch {
       // ignore
     }
@@ -311,28 +370,68 @@ async function scrapeMetaAdVideo(url) {
     await page.mouse.wheel(0, 900)
     await page.waitForTimeout(6_000)
 
-    // Pick the largest candidate by content-length.
-    candidates.sort((a, b) => (b.contentLength || 0) - (a.contentLength || 0))
-    const best = candidates.find((c) => c.url)
-
-    // Fallback: regex scan of HTML.
-    let fallbackUrl = null
-    if (!best) {
-      const html = await page.content()
-      const m = html.match(/https?:\/\/[^"'\s>]+\.mp4[^"'\s>]*/i)
-      if (m) fallbackUrl = m[0]
+    // Collect direct DOM sources.
+    const domSources = await page.$$eval('video', (nodes) => {
+      const urls = []
+      for (const node of nodes) {
+        if (node.currentSrc) urls.push(node.currentSrc)
+        if (node.src) urls.push(node.src)
+        const children = node.querySelectorAll('source')
+        for (const child of children) {
+          if (child.src) urls.push(child.src)
+        }
+      }
+      return Array.from(new Set(urls.filter(Boolean)))
+    })
+    for (const src of domSources) {
+      pushCandidate({ url: src, source: 'dom' })
     }
 
+    // Parse page HTML for MP4/HLS and common Meta JSON fields.
+    const html = await page.content()
+    const urlMatches = html.match(/https?:\/\/[^"'\\\s>]+(\.mp4|\.m3u8)[^"'\\\s>]*/gi) || []
+    for (const match of urlMatches) {
+      pushCandidate({ url: match, source: 'html' })
+    }
+
+    const encodedMatches =
+      html.match(/"(playable_url_quality_hd|playable_url|browser_native_sd_url)"\s*:\s*"([^"]+)"/gi) || []
+    for (const match of encodedMatches) {
+      const parsed = match.match(/"(playable_url_quality_hd|playable_url|browser_native_sd_url)"\s*:\s*"([^"]+)"/i)
+      if (!parsed) continue
+      pushCandidate({ url: parsed[2], source: parsed[1] })
+    }
+
+    candidates.sort((a, b) => b.score - a.score)
+    const best = candidates[0] || null
+
     const title = await page.title().catch(() => null)
-    return { videoUrl: best?.url || fallbackUrl, meta: { page_title: title } }
+    const cookieHeader = (await page.context().cookies())
+      .map((cookie) => `${cookie.name}=${cookie.value}`)
+      .join('; ')
+
+    return {
+      videoUrl: best?.url || null,
+      kind: best?.kind || null,
+      requestHeaders: {
+        'user-agent': userAgent,
+        referer: url,
+        ...(cookieHeader ? { cookie: cookieHeader } : {}),
+      },
+      meta: {
+        page_title: title,
+        candidate_count: candidates.length,
+        selected_source: best?.source || null,
+      },
+    }
   } finally {
     await page.close().catch(() => {})
     await browser.close().catch(() => {})
   }
 }
 
-async function downloadToFile(url, filePath, maxBytes) {
-  const res = await fetch(url, { redirect: 'follow' })
+async function downloadToFile(url, filePath, maxBytes, requestHeaders = {}) {
+  const res = await fetch(url, { redirect: 'follow', headers: requestHeaders })
   if (!res.ok) throw new Error(`Download failed: ${res.status} ${res.statusText}`)
 
   const lenHeader = res.headers.get('content-length')
@@ -598,8 +697,41 @@ async function processIngestMetaAd(job) {
 
   try {
     const maxBytes = 250 * 1024 * 1024 // 250MB guardrail
-    log('Downloading video...')
-    await downloadToFile(scraped.videoUrl, mp4Path, maxBytes)
+    const looksHls =
+      scraped.kind === 'hls' || /\.m3u8(\?|$)/i.test(String(scraped.videoUrl || ''))
+
+    if (looksHls) {
+      log('Downloading HLS stream via ffmpeg...')
+      const headerLines = Object.entries(scraped.requestHeaders || {})
+        .map(([k, v]) => `${k}: ${v}\r\n`)
+        .join('')
+      const ffmpegArgs = ['-y']
+      if (headerLines) {
+        ffmpegArgs.push('-headers', headerLines)
+      }
+      ffmpegArgs.push(
+        '-i',
+        scraped.videoUrl,
+        '-c:v',
+        'libx264',
+        '-preset',
+        'veryfast',
+        '-c:a',
+        'aac',
+        '-movflags',
+        '+faststart',
+        mp4Path
+      )
+      await runCommand('ffmpeg', ffmpegArgs, { cwd: tmpDir })
+    } else {
+      log('Downloading MP4...')
+      await downloadToFile(scraped.videoUrl, mp4Path, maxBytes, scraped.requestHeaders || {})
+    }
+
+    const downloaded = await fsp.stat(mp4Path)
+    if (downloaded.size > maxBytes) {
+      throw new Error(`Video too large after download (${downloaded.size} bytes)`)
+    }
 
     const r2Key = `products/${productId}/swipes/${swipeId}/source.mp4`
     log('Uploading to R2...', r2Key)
@@ -629,6 +761,7 @@ async function processIngestMetaAd(job) {
     const meta = {
       ...scraped.meta,
       video_url: scraped.videoUrl,
+      video_kind: scraped.kind || null,
     }
 
     await pool.query(

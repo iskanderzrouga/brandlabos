@@ -5,6 +5,8 @@ import { useParams, useRouter } from 'next/navigation'
 import { useEffect, useMemo, useState } from 'react'
 import { ConfirmDialog, FeedbackNotice } from '@/components/ui/feedback'
 
+const STALE_MS = 10 * 60 * 1000
+
 type SwipeRow = {
   id: string
   status: 'processing' | 'ready' | 'failed'
@@ -14,6 +16,17 @@ type SwipeRow = {
   source_url?: string | null
   error_message?: string | null
   created_at?: string
+  updated_at?: string
+  job_id?: string | null
+  job_status?: 'queued' | 'running' | 'completed' | 'failed' | null
+  job_error_message?: string | null
+  job_updated_at?: string | null
+}
+
+function toMillis(value?: string | null) {
+  if (!value) return 0
+  const ms = new Date(value).getTime()
+  return Number.isFinite(ms) ? ms : 0
 }
 
 export default function SwipeDetailPage() {
@@ -28,13 +41,27 @@ export default function SwipeDetailPage() {
   const [feedback, setFeedback] = useState<{ tone: 'info' | 'success' | 'error'; message: string } | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [retrying, setRetrying] = useState(false)
+
+  const stale = useMemo(() => {
+    if (!swipe || swipe.status !== 'processing') return false
+    const referenceMs =
+      toMillis(swipe.job_updated_at) || toMillis(swipe.updated_at) || toMillis(swipe.created_at)
+    if (!referenceMs) return false
+    return Date.now() - referenceMs > STALE_MS
+  }, [swipe])
 
   const statusLabel = useMemo(() => {
     if (!swipe) return ''
     if (swipe.status === 'ready') return 'Ready'
     if (swipe.status === 'failed') return 'Failed'
+    if (stale) return 'Stuck'
+    if (swipe.job_status === 'queued') return 'Queued'
+    if (swipe.job_status === 'running') return 'Running'
     return 'Processing'
-  }, [swipe])
+  }, [stale, swipe])
+
+  const canRetry = Boolean(swipe && (swipe.status === 'failed' || stale))
 
   async function handleDelete() {
     if (deleting) return
@@ -51,6 +78,27 @@ export default function SwipeDetailPage() {
       setFeedback({ tone: 'error', message: 'Failed to delete swipe' })
     } finally {
       setDeleting(false)
+    }
+  }
+
+  async function handleRetry() {
+    if (!id || retrying) return
+    setRetrying(true)
+    try {
+      const res = await fetch(`/api/swipes/${id}/retry`, { method: 'POST' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data?.error || 'Failed to retry swipe')
+      setFeedback({ tone: 'success', message: 'Swipe re-queued.' })
+      const refreshed = await fetch(`/api/swipes/${id}?full=1`)
+      const refreshedData = await refreshed.json().catch(() => null)
+      if (refreshed.ok && refreshedData) setSwipe(refreshedData)
+    } catch (err) {
+      setFeedback({
+        tone: 'error',
+        message: err instanceof Error ? err.message : 'Failed to retry swipe',
+      })
+    } finally {
+      setRetrying(false)
     }
   }
 
@@ -155,6 +203,15 @@ export default function SwipeDetailPage() {
             >
               {statusLabel}
             </span>
+            {canRetry && (
+              <button
+                onClick={handleRetry}
+                disabled={retrying}
+                className="editor-button-ghost text-xs text-[var(--editor-accent)]"
+              >
+                {retrying ? 'Retrying...' : 'Retry'}
+              </button>
+            )}
             <button
               onClick={() => setConfirmDelete(true)}
               className="editor-button-ghost text-xs text-red-300"
@@ -190,11 +247,11 @@ export default function SwipeDetailPage() {
             </div>
           ) : swipe.status === 'processing' ? (
             <p className="text-sm text-[var(--editor-ink-muted)] mt-3">
-              Processing... video will appear when ready.
+              {stale ? 'Processing appears stuck. Use Retry to re-queue this swipe.' : 'Processing... video will appear when ready.'}
             </p>
           ) : swipe.status === 'failed' ? (
             <p className="text-sm text-red-700 mt-3">
-              Failed: {swipe.error_message || 'Unknown error'}
+              Failed: {swipe.job_error_message || swipe.error_message || 'Unknown error'}
             </p>
           ) : (
             <p className="text-sm text-[var(--editor-ink-muted)] mt-3">

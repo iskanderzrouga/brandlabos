@@ -1,27 +1,20 @@
+import crypto from 'node:crypto'
+
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
+
 import { sql } from '@/lib/db'
 import { requireAuth } from '@/lib/require-auth'
-import { DEFAULT_PROMPT_BLOCKS } from '@/lib/prompt-defaults'
 import { getOrgApiKey } from '@/lib/api-keys'
+import {
+  AGENT_CONTEXT_DEFAULTS,
+  buildAgentContextMessages,
+  buildSystemPrompt,
+  loadGlobalPromptBlocks,
+  type ThreadContext,
+} from '@/lib/agent/compiled-context'
 
-export const maxDuration = 120
-
-type ThreadContext = {
-  skill?: string
-  versions?: number
-  avatar_ids?: string[]
-  positioning_id?: string | null
-  active_swipe_id?: string | null
-  research_ids?: string[]
-}
-
-type PromptBlockRow = {
-  id: string
-  type: string
-  content: string
-  metadata?: { key?: string }
-}
+export const maxDuration = 300
 
 type ToolUseBlock = {
   type: 'tool_use'
@@ -46,15 +39,43 @@ function nonNegativeIntFromEnv(name: string, fallback: number): number {
   return Math.floor(value)
 }
 
-const AGENT_MAX_STEPS = positiveIntFromEnv('AGENT_MAX_STEPS', 2)
-const AGENT_MAX_TOKENS = positiveIntFromEnv('AGENT_MAX_TOKENS', 1400)
-const AGENT_LOOP_BUDGET_MS = positiveIntFromEnv('AGENT_LOOP_BUDGET_MS', 25_000)
-const AGENT_HISTORY_LIMIT = positiveIntFromEnv('AGENT_HISTORY_LIMIT', 40)
-const AGENT_CONTEXT_MAX_MESSAGES = positiveIntFromEnv('AGENT_CONTEXT_MAX_MESSAGES', 14)
-const AGENT_CONTEXT_MAX_CHARS = positiveIntFromEnv('AGENT_CONTEXT_MAX_CHARS', 24_000)
-const AGENT_CONTEXT_MAX_CHARS_PER_MESSAGE = positiveIntFromEnv('AGENT_CONTEXT_MAX_CHARS_PER_MESSAGE', 6_000)
-const ANTHROPIC_TIMEOUT_MS = positiveIntFromEnv('ANTHROPIC_TIMEOUT_MS', 20_000)
-const ANTHROPIC_MAX_RETRIES = nonNegativeIntFromEnv('ANTHROPIC_MAX_RETRIES', 0)
+function boolFromEnv(name: string, fallback: boolean): boolean {
+  const raw = process.env[name]
+  if (!raw) return fallback
+  const normalized = raw.trim().toLowerCase()
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false
+  return fallback
+}
+
+const AGENT_MODEL = 'claude-opus-4-6'
+const AGENT_MAX_STEPS = positiveIntFromEnv('AGENT_MAX_STEPS', 3)
+const AGENT_MAX_TOKENS = positiveIntFromEnv('AGENT_MAX_TOKENS', 1600)
+const AGENT_LOOP_BUDGET_MS = positiveIntFromEnv('AGENT_LOOP_BUDGET_MS', 90_000)
+const AGENT_HISTORY_LIMIT = positiveIntFromEnv('AGENT_HISTORY_LIMIT', 120)
+
+const AGENT_CONTEXT_MAX_MESSAGES = positiveIntFromEnv(
+  'AGENT_CONTEXT_MAX_MESSAGES',
+  AGENT_CONTEXT_DEFAULTS.maxMessages
+)
+const AGENT_CONTEXT_MAX_CHARS = positiveIntFromEnv(
+  'AGENT_CONTEXT_MAX_CHARS',
+  AGENT_CONTEXT_DEFAULTS.maxChars
+)
+const AGENT_CONTEXT_MAX_CHARS_PER_MESSAGE = positiveIntFromEnv(
+  'AGENT_CONTEXT_MAX_CHARS_PER_MESSAGE',
+  AGENT_CONTEXT_DEFAULTS.maxCharsPerMessage
+)
+
+const ANTHROPIC_TIMEOUT_MS = positiveIntFromEnv('ANTHROPIC_TIMEOUT_MS', 90_000)
+const ANTHROPIC_MAX_RETRIES = nonNegativeIntFromEnv('ANTHROPIC_MAX_RETRIES', 1)
+const ANTHROPIC_ENABLE_CONTEXT_1M = boolFromEnv('ANTHROPIC_ENABLE_CONTEXT_1M', true)
+const ANTHROPIC_CONTEXT_1M_BETA =
+  process.env.ANTHROPIC_CONTEXT_1M_BETA?.trim() || 'context-1m-2025-08-07'
+const ANTHROPIC_CONTEXT_1M_MIN_INPUT_TOKENS = positiveIntFromEnv(
+  'ANTHROPIC_CONTEXT_1M_MIN_INPUT_TOKENS',
+  170_000
+)
 
 function isToolUseBlock(block: unknown): block is ToolUseBlock {
   return (
@@ -70,115 +91,17 @@ function extractMetaAdLibraryUrls(text: string): string[] {
   const regex = /(https?:\/\/[^\s]+?facebook\.com\/ads\/library\/[^\s]*)/gi
   const matches = text.match(regex) || []
   return matches
-    .map((m) => m.replace(/[),.;!?]+$/g, ''))
+    .map((match) => match.replace(/[),.;!?]+$/g, ''))
     .filter(Boolean)
 }
 
 function isMetaAdLibraryUrl(url: string) {
   try {
-    const u = new URL(url)
-    return u.hostname.includes('facebook.com') && u.pathname.includes('/ads/library')
+    const parsed = new URL(url)
+    return parsed.hostname.includes('facebook.com') && parsed.pathname.includes('/ads/library')
   } catch {
     return false
   }
-}
-
-async function loadGlobalPromptBlocks(): Promise<Map<string, PromptBlockRow>> {
-  const blocks = await sql`
-    SELECT id, type, content, metadata
-    FROM prompt_blocks
-    WHERE is_active = true
-      AND scope = 'global'
-    ORDER BY updated_at ASC, created_at ASC
-  ` as PromptBlockRow[]
-
-  const map = new Map<string, PromptBlockRow>()
-  for (const b of blocks || []) {
-    const key = (b.metadata as { key?: string } | undefined)?.key || b.type
-    map.set(key, b)
-  }
-  return map
-}
-
-function getPromptBlockContent(blocks: Map<string, PromptBlockRow>, key: string): string {
-  const db = blocks.get(key)?.content
-  if (db) return db
-  const fallback = (DEFAULT_PROMPT_BLOCKS as any)[key]?.content
-  return typeof fallback === 'string' ? fallback : ''
-}
-
-function buildSystemPrompt(args: {
-  skill: string
-  versions: number
-  product: { name: string; content: string; brandName?: string | null; brandVoice?: string | null }
-  avatars: Array<{ id: string; name: string; content: string }>
-  positioning?: { name: string; content: string } | null
-  swipe?: { id: string; status: string; title?: string | null; summary?: string | null; transcript?: string | null; source_url?: string | null } | null
-  research?: Array<{ id: string; title?: string | null; summary?: string | null; content?: string | null }>
-  blocks: Map<string, PromptBlockRow>
-}) {
-  const {
-    skill,
-    versions,
-    product,
-    avatars,
-    positioning,
-    swipe,
-    blocks,
-  } = args
-
-  const writingRules = getPromptBlockContent(blocks, 'writing_rules')
-  const skillGuidance = getPromptBlockContent(blocks, skill)
-  const agentSystemTemplate = getPromptBlockContent(blocks, 'agent_system')
-  const agentSystem = agentSystemTemplate.replace(/{{\s*versions\s*}}/gi, () => String(versions))
-
-  const sections: string[] = []
-
-  if (agentSystem.trim()) sections.push(agentSystem)
-
-  sections.push(`## CURRENT SKILL\n${skill}`)
-  if (skillGuidance) sections.push(`## SKILL GUIDANCE\n${skillGuidance}`)
-  if (writingRules) sections.push(`## WRITING RULES\n${writingRules}`)
-
-  sections.push(`## PRODUCT\nName: ${product.name}\n\nContext:\n${product.content || '(none)'}\n`)
-  if (product.brandName || product.brandVoice) {
-    sections.push(`## BRAND\nName: ${product.brandName || '(unknown)'}\n\nVoice guidelines:\n${product.brandVoice || '(none)'}`)
-  }
-
-  if (positioning) {
-    sections.push(`## POSITIONING\n${positioning.name}\n\n${positioning.content}`)
-  }
-
-  if (avatars.length > 0) {
-    const lines: string[] = []
-    lines.push(`## AVATARS (${avatars.length})`)
-    for (const a of avatars) {
-      lines.push(`\n### ${a.name}\n${a.content}`)
-    }
-    sections.push(lines.join('\n'))
-  } else {
-    sections.push(`## AVATARS\n(none selected)`)
-  }
-
-  if (swipe) {
-    const transcript =
-      swipe.status === 'ready' && swipe.transcript
-        ? swipe.transcript.slice(0, 7000)
-        : null
-    sections.push(`## ACTIVE SWIPE\nStatus: ${swipe.status}\nURL: ${swipe.source_url || ''}\nTitle: ${swipe.title || ''}\nSummary: ${swipe.summary || ''}\n\nTranscript:\n${transcript || '(not ready yet)'}\n`)
-  }
-
-  if (args.research && args.research.length > 0) {
-    const lines: string[] = []
-    lines.push(`## RESEARCH CONTEXT (${args.research.length})`)
-    for (const item of args.research) {
-      const excerpt = item.content ? item.content.slice(0, 1200) : ''
-      lines.push(`\n### ${item.title || 'Untitled research'}\n${item.summary || ''}\n${excerpt ? `\nExcerpt:\n${excerpt}` : ''}`.trim())
-    }
-    sections.push(lines.join('\n'))
-  }
-
-  return sections.join('\n\n---\n\n')
 }
 
 function deriveThreadTitle(message: string) {
@@ -192,6 +115,7 @@ function deriveThreadTitle(message: string) {
 function shouldEnableTools(messageText: string, threadContext: ThreadContext) {
   if (threadContext.active_swipe_id) return true
   if (Array.isArray(threadContext.research_ids) && threadContext.research_ids.length > 0) return true
+
   const text = messageText.toLowerCase()
   if (text.includes('facebook.com/ads/library')) return true
 
@@ -206,51 +130,111 @@ function shouldEnableTools(messageText: string, threadContext: ThreadContext) {
   )
 }
 
-function clipWithMarker(value: string, maxChars: number): { text: string; clipped: boolean } {
-  if (maxChars <= 0) return { text: '', clipped: value.length > 0 }
-  if (value.length <= maxChars) return { text: value, clipped: false }
-  if (maxChars <= 20) return { text: value.slice(0, maxChars), clipped: true }
-  const marker = '\n[truncated]'
-  const keep = Math.max(1, maxChars - marker.length)
-  return { text: `${value.slice(0, keep)}${marker}`, clipped: true }
+function estimateInputTokens(systemPrompt: string, messages: Array<{ role: string; content: unknown }>) {
+  let chars = systemPrompt.length
+  for (const message of messages) {
+    const content = message.content
+    if (typeof content === 'string') {
+      chars += content.length
+      continue
+    }
+    try {
+      chars += JSON.stringify(content).length
+    } catch {
+      // ignore unparsable chunks for estimate only
+    }
+  }
+  return Math.ceil(chars / 4)
 }
 
-function buildBoundedMessages(rows: Array<{ role: string; content: string }>) {
-  const normalized = (rows || [])
-    .map((row) => {
-      const role = row.role === 'assistant' ? 'assistant' : 'user'
-      const baseContent = row.role === 'tool' ? `[tool] ${String(row.content || '')}` : String(row.content || '')
-      return { role, content: baseContent.trim() }
-    })
-    .filter((row) => row.content.length > 0)
+function buildAnthropicRequestOptions(useContext1M: boolean) {
+  if (!useContext1M || !ANTHROPIC_CONTEXT_1M_BETA) return undefined
+  return {
+    headers: {
+      'anthropic-beta': ANTHROPIC_CONTEXT_1M_BETA,
+    },
+  }
+}
 
-  const reversed: Array<{ role: 'assistant' | 'user'; content: string }> = []
-  let charBudget = 0
+function isContext1MBetaError(error: unknown): boolean {
+  const message =
+    typeof (error as any)?.message === 'string' ? String((error as any).message).toLowerCase() : ''
+  const status = typeof (error as any)?.status === 'number' ? Number((error as any).status) : 0
+  if (status !== 400) return false
+  return (
+    message.includes('anthropic-beta') ||
+    message.includes('context-1m') ||
+    message.includes('beta header')
+  )
+}
 
-  for (let idx = normalized.length - 1; idx >= 0; idx -= 1) {
-    if (reversed.length >= AGENT_CONTEXT_MAX_MESSAGES) break
-    if (charBudget >= AGENT_CONTEXT_MAX_CHARS) break
+function describeAgentError(error: unknown): { status: number; code: string; message: string } {
+  const status = typeof (error as any)?.status === 'number' ? Number((error as any).status) : 0
+  const name = typeof (error as any)?.name === 'string' ? String((error as any).name) : ''
+  const message = typeof (error as any)?.message === 'string' ? String((error as any).message) : ''
 
-    const row = normalized[idx]
-    const isNewestMessage = reversed.length === 0
-    const perMessageLimit =
-      isNewestMessage && row.role === 'user'
-        ? Math.max(AGENT_CONTEXT_MAX_CHARS_PER_MESSAGE, row.content.length)
-        : AGENT_CONTEXT_MAX_CHARS_PER_MESSAGE
-
-    const perMessageClipped = clipWithMarker(row.content, perMessageLimit)
-    let nextContent = perMessageClipped.text
-    const remaining = AGENT_CONTEXT_MAX_CHARS - charBudget
-    if (nextContent.length > remaining) {
-      nextContent = clipWithMarker(nextContent, remaining).text
+  if (name === 'APIConnectionTimeoutError' || /timed?\s*out/i.test(message)) {
+    return {
+      status: 504,
+      code: 'timeout',
+      message: 'Agent timed out before the model finished. Please retry.',
     }
-    if (!nextContent) continue
-
-    charBudget += nextContent.length
-    reversed.push({ role: row.role as 'assistant' | 'user', content: nextContent })
   }
 
-  return reversed.reverse()
+  if (status === 429) {
+    return {
+      status: 429,
+      code: 'rate_limited',
+      message: 'Anthropic rate limit reached. Please retry in a moment.',
+    }
+  }
+
+  if (status === 401 || status === 403) {
+    return {
+      status: 502,
+      code: 'provider_auth',
+      message: 'Anthropic authentication failed. Check your API key settings.',
+    }
+  }
+
+  if (status === 413) {
+    return {
+      status: 413,
+      code: 'input_too_large',
+      message: 'The request payload is too large. Reduce attachments or history and retry.',
+    }
+  }
+
+  if (isContext1MBetaError(error)) {
+    return {
+      status: 400,
+      code: 'context_1m_beta_error',
+      message: '1M context beta header was rejected by provider.',
+    }
+  }
+
+  if (status >= 500 && status < 600) {
+    return {
+      status: 502,
+      code: 'provider_error',
+      message: 'Anthropic provider error. Please retry.',
+    }
+  }
+
+  return {
+    status: 500,
+    code: 'agent_chat_failed',
+    message: message || 'Agent chat failed.',
+  }
+}
+
+function writeSseEvent(
+  controller: ReadableStreamDefaultController<Uint8Array>,
+  encoder: TextEncoder,
+  payload: Record<string, unknown>
+) {
+  const chunk = `data: ${JSON.stringify(payload)}\n\n`
+  controller.enqueue(encoder.encode(chunk))
 }
 
 async function ingestMetaSwipe(args: { productId: string; url: string; userId: string }) {
@@ -298,13 +282,34 @@ async function ingestMetaSwipe(args: { productId: string; url: string; userId: s
     )
     RETURNING *
   `
+
   return { swipe, job: jobRows[0] ?? null }
 }
 
 export async function POST(request: NextRequest) {
+  const requestId = crypto.randomUUID()
+  const responseHeaders = new Headers({ 'x-request-id': requestId })
+
   const user = await requireAuth()
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  if (!user) {
+    return NextResponse.json(
+      { error: 'Unauthorized', code: 'unauthorized', request_id: requestId },
+      { status: 401, headers: responseHeaders }
+    )
+  }
   const authedUser = user
+
+  const mode = request.nextUrl.searchParams.get('mode') === 'json' ? 'json' : 'stream'
+  const startedAt = Date.now()
+
+  const clientBuildId = request.headers.get('x-client-build-id')?.trim() || null
+  const serverBuildId =
+    process.env.NEXT_DEPLOYMENT_ID || process.env.NETLIFY_BUILD_ID || process.env.COMMIT_REF || null
+  const deploymentSkew = Boolean(clientBuildId && serverBuildId && clientBuildId !== serverBuildId)
+
+  if (serverBuildId) {
+    responseHeaders.set('x-server-build-id', serverBuildId)
+  }
 
   try {
     const body = await request.json()
@@ -312,8 +317,13 @@ export async function POST(request: NextRequest) {
     const messageText = String(body.message || '').trim()
 
     if (!threadId || !messageText) {
-      return NextResponse.json({ error: 'thread_id and message are required' }, { status: 400 })
+      return NextResponse.json(
+        { error: 'thread_id and message are required', code: 'invalid_request', request_id: requestId },
+        { status: 400, headers: responseHeaders }
+      )
     }
+
+    const dbLoadStartedAt = Date.now()
 
     const threadRows = await sql`
       SELECT *
@@ -323,11 +333,15 @@ export async function POST(request: NextRequest) {
       LIMIT 1
     `
     const thread = threadRows[0]
-    if (!thread) return NextResponse.json({ error: 'Thread not found' }, { status: 404 })
+    if (!thread) {
+      return NextResponse.json(
+        { error: 'Thread not found', code: 'thread_not_found', request_id: requestId },
+        { status: 404, headers: responseHeaders }
+      )
+    }
 
     const threadContext: ThreadContext = (thread.context || {}) as ThreadContext
 
-    // Persist user message
     await sql`
       INSERT INTO agent_messages (thread_id, role, content)
       VALUES (${threadId}, 'user', ${messageText})
@@ -344,7 +358,6 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Auto-ingest Meta Ad Library URL(s) if present
     const urls = extractMetaAdLibraryUrls(messageText).filter(isMetaAdLibraryUrl)
     let maybeSwipe: any = null
     if (urls.length > 0) {
@@ -352,7 +365,6 @@ export async function POST(request: NextRequest) {
       const ingest = await ingestMetaSwipe({ productId: thread.product_id, url, userId: authedUser.id })
       maybeSwipe = ingest.swipe
 
-      // Update thread context with active swipe
       threadContext.active_swipe_id = ingest.swipe.id
       await sql`
         UPDATE agent_threads
@@ -371,7 +383,6 @@ export async function POST(request: NextRequest) {
       `
     }
 
-    // Load product + context for system prompt
     const productRows = await sql`
       SELECT
         products.id,
@@ -386,23 +397,30 @@ export async function POST(request: NextRequest) {
       LIMIT 1
     `
     const productRow = productRows[0]
-    if (!productRow) return NextResponse.json({ error: 'Product not found' }, { status: 404 })
+    if (!productRow) {
+      return NextResponse.json(
+        { error: 'Product not found', code: 'product_not_found', request_id: requestId },
+        { status: 404, headers: responseHeaders }
+      )
+    }
 
     const skill = String(threadContext.skill || 'ugc_video_scripts')
     const versions = Math.min(6, Math.max(1, Number(threadContext.versions || 1)))
 
-    // Load selected avatars (if any)
     const avatarIds = Array.isArray(threadContext.avatar_ids) ? threadContext.avatar_ids : []
     const avatars: Array<{ id: string; name: string; content: string }> = []
-    for (const id of avatarIds) {
-      const rows = await sql`SELECT id, name, content FROM avatars WHERE id = ${id} LIMIT 1`
-      const row = rows[0] as { id: string; name: string; content: string } | undefined
-      if (row) {
-        avatars.push({ id: row.id, name: row.name, content: row.content })
-      }
+    if (avatarIds.length > 0) {
+      const avatarRows = (await sql`
+        SELECT id, name, content
+        FROM avatars
+        WHERE id = ANY(${avatarIds})
+      `) as Array<{ id: string; name: string; content: string }>
+      const order = new Map(avatarIds.map((id, idx) => [id, idx]))
+      avatars.push(
+        ...(avatarRows || []).sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0))
+      )
     }
 
-    // Load positioning (pitches) if selected
     let positioning: { name: string; content: string } | null = null
     if (threadContext.positioning_id) {
       const rows = await sql`
@@ -415,7 +433,6 @@ export async function POST(request: NextRequest) {
       if (row) positioning = { name: row.name, content: row.content }
     }
 
-    // Load active swipe if selected
     let swipe: any = null
     if (threadContext.active_swipe_id) {
       const rows = await sql`
@@ -428,8 +445,12 @@ export async function POST(request: NextRequest) {
       swipe = rows[0] ?? null
     }
 
-    // Load attached research items if any
-    let research: Array<{ id: string; title?: string | null; summary?: string | null; content?: string | null }> = []
+    let research: Array<{
+      id: string
+      title?: string | null
+      summary?: string | null
+      content?: string | null
+    }> = []
     const researchIds = Array.isArray(threadContext.research_ids) ? threadContext.research_ids : []
     if (researchIds.length > 0) {
       const rows = (await sql`
@@ -439,15 +460,13 @@ export async function POST(request: NextRequest) {
           AND product_id = ${thread.product_id}
       `) as Array<{ id: string; title?: string | null; summary?: string | null; content?: string | null }>
       const order = new Map(researchIds.map((id, idx) => [id, idx]))
-      research = (rows || []).sort((a: any, b: any) => {
-        const ai = order.get(a.id) ?? 0
-        const bi = order.get(b.id) ?? 0
-        return ai - bi
-      })
+      research = (rows || []).sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0))
     }
 
+    const promptCompileStartedAt = Date.now()
+
     const blocks = await loadGlobalPromptBlocks()
-    const system = buildSystemPrompt({
+    const systemBuild = buildSystemPrompt({
       skill,
       versions,
       product: {
@@ -471,14 +490,29 @@ export async function POST(request: NextRequest) {
       LIMIT ${AGENT_HISTORY_LIMIT}
     `
 
-    // Keep a bounded, recent context window so long history doesn't blow up request size.
-    const messages: any[] = buildBoundedMessages(
-      (historyRows as Array<{ role: string; content: string }>).reverse()
+    const contextWindow = buildAgentContextMessages(
+      (historyRows as Array<{ role: string; content: string }>).reverse(),
+      {
+        maxMessages: AGENT_CONTEXT_MAX_MESSAGES,
+        maxChars: AGENT_CONTEXT_MAX_CHARS,
+        maxCharsPerMessage: AGENT_CONTEXT_MAX_CHARS_PER_MESSAGE,
+      }
     )
+
+    const contextMessages = contextWindow.messages
+    const promptCompileMs = Date.now() - promptCompileStartedAt
+    const dbLoadMs = Date.now() - dbLoadStartedAt
 
     const anthropicKey = await getOrgApiKey('anthropic', productRow.organization_id || null)
     if (!anthropicKey) {
-      return NextResponse.json({ error: 'ANTHROPIC_API_KEY is not set' }, { status: 500 })
+      return NextResponse.json(
+        {
+          error: 'ANTHROPIC_API_KEY is not set',
+          code: 'missing_anthropic_key',
+          request_id: requestId,
+        },
+        { status: 500, headers: responseHeaders }
+      )
     }
 
     const anthropic = new Anthropic({
@@ -487,7 +521,15 @@ export async function POST(request: NextRequest) {
       maxRetries: ANTHROPIC_MAX_RETRIES,
     })
 
-    const model = 'claude-opus-4-6'
+    const estimatedInputTokens = estimateInputTokens(systemBuild.prompt, contextMessages)
+
+    const context1MRequested =
+      ANTHROPIC_ENABLE_CONTEXT_1M &&
+      Boolean(ANTHROPIC_CONTEXT_1M_BETA) &&
+      estimatedInputTokens >= ANTHROPIC_CONTEXT_1M_MIN_INPUT_TOKENS
+
+    let context1MActive = context1MRequested
+    let context1MFallback = false
 
     const tools: any[] = [
       {
@@ -529,18 +571,18 @@ export async function POST(request: NextRequest) {
       },
     ]
 
-    async function runTool(toolUse: any) {
+    async function runTool(toolUse: ToolUseBlock) {
       if (!toolUse?.name) throw new Error('Invalid tool use')
 
       if (toolUse.name === 'ingest_meta_ad_url') {
-        const url = String(toolUse.input?.url || '').trim()
+        const url = String((toolUse.input as any)?.url || '').trim()
         const productId = thread.product_id
         if (!url || !isMetaAdLibraryUrl(url)) {
           return { error: 'Invalid Meta Ad Library URL' }
         }
+
         const ingest = await ingestMetaSwipe({ productId, url, userId: authedUser.id })
 
-        // Keep active swipe pinned to the newly ingested one.
         threadContext.active_swipe_id = ingest.swipe.id
         await sql`
           UPDATE agent_threads
@@ -557,7 +599,7 @@ export async function POST(request: NextRequest) {
 
       if (toolUse.name === 'list_swipes') {
         const productId = thread.product_id
-        const query = String(toolUse.input?.query || '').trim()
+        const query = String((toolUse.input as any)?.query || '').trim()
         if (query) {
           const like = `%${query}%`
           const rows = await sql`
@@ -574,6 +616,7 @@ export async function POST(request: NextRequest) {
           `
           return { swipes: rows }
         }
+
         const rows = await sql`
           SELECT id, status, title, summary, source_url, created_at
           FROM swipes
@@ -585,8 +628,8 @@ export async function POST(request: NextRequest) {
       }
 
       if (toolUse.name === 'get_swipe') {
-        const swipeId = String(toolUse.input?.swipe_id || '').trim()
-        const includeTranscript = Boolean(toolUse.input?.include_transcript)
+        const swipeId = String((toolUse.input as any)?.swipe_id || '').trim()
+        const includeTranscript = Boolean((toolUse.input as any)?.include_transcript)
         if (!swipeId) return { error: 'swipe_id is required' }
 
         const rows = await sql`
@@ -602,6 +645,7 @@ export async function POST(request: NextRequest) {
         if (!includeTranscript) {
           delete row.transcript
         }
+
         return row
       }
 
@@ -609,76 +653,259 @@ export async function POST(request: NextRequest) {
     }
 
     const activeTools = shouldEnableTools(messageText, threadContext) ? tools : undefined
-    const loopStartedAt = Date.now()
-    // Agent loop with tool calling.
     const maxSteps = activeTools ? AGENT_MAX_STEPS : 1
-    let assistantText = ''
-    let workingMessages: any[] = messages
 
-    for (let step = 0; step < maxSteps; step += 1) {
-      if (Date.now() - loopStartedAt > AGENT_LOOP_BUDGET_MS) {
-        console.warn('Agent loop budget exceeded', { threadId, step, model })
-        break
+    const baseMeta = {
+      request_id: requestId,
+      model: AGENT_MODEL,
+      estimated_input_tokens: estimatedInputTokens,
+      context_1m_requested: context1MRequested,
+      max_steps: maxSteps,
+      deployment: {
+        client_build_id: clientBuildId,
+        server_build_id: serverBuildId,
+        skew_detected: deploymentSkew,
+      },
+    }
+
+    const runAgent = async (onDelta?: (delta: string) => void) => {
+      const loopStartedAt = Date.now()
+      let modelWaitMs = 0
+      let toolSteps = 0
+      let providerRequestId: string | null = null
+      let assistantText = ''
+      let workingMessages: any[] = contextMessages
+
+      const runSingleStep = async (useContext1M: boolean) => {
+        const stepStartedAt = Date.now()
+        let streamedText = ''
+
+        const stream = anthropic.messages.stream(
+          {
+            model: AGENT_MODEL,
+            max_tokens: AGENT_MAX_TOKENS,
+            system: systemBuild.prompt,
+            messages: workingMessages,
+            ...(activeTools ? { tools: activeTools } : {}),
+          },
+          buildAnthropicRequestOptions(useContext1M)
+        )
+
+        stream.on('text', (delta) => {
+          streamedText += delta
+          if (delta && onDelta) onDelta(delta)
+        })
+
+        const finalMessage = await stream.finalMessage()
+        providerRequestId = stream.request_id || providerRequestId
+        modelWaitMs += Date.now() - stepStartedAt
+
+        return { finalMessage, streamedText }
       }
-      const resp = await anthropic.messages.create({
-        model,
-        max_tokens: AGENT_MAX_TOKENS,
-        system,
-        messages: workingMessages,
-        ...(activeTools ? { tools: activeTools } : {}),
+
+      for (let step = 0; step < maxSteps; step += 1) {
+        if (Date.now() - loopStartedAt > AGENT_LOOP_BUDGET_MS) {
+          console.warn('Agent loop budget exceeded', {
+            request_id: requestId,
+            thread_id: threadId,
+            step,
+            model: AGENT_MODEL,
+          })
+          break
+        }
+
+        let stepResult: { finalMessage: any; streamedText: string }
+
+        try {
+          stepResult = await runSingleStep(context1MActive)
+        } catch (error) {
+          if (context1MActive && isContext1MBetaError(error)) {
+            context1MFallback = true
+            context1MActive = false
+            stepResult = await runSingleStep(context1MActive)
+          } else {
+            throw error
+          }
+        }
+
+        const content = stepResult.finalMessage?.content || []
+        const textParts = content
+          .filter((chunk: any) => chunk?.type === 'text')
+          .map((chunk: any) => String(chunk?.text || ''))
+          .filter(Boolean)
+
+        if (textParts.length > 0) {
+          assistantText = textParts.join('\n\n').trim()
+        } else if (stepResult.streamedText.trim()) {
+          assistantText = stepResult.streamedText.trim()
+        }
+
+        const toolUses = content.filter(isToolUseBlock)
+        workingMessages = workingMessages.concat([{ role: 'assistant', content }])
+
+        if (!activeTools || toolUses.length === 0) break
+
+        for (const toolUse of toolUses) {
+          toolSteps += 1
+          const result = await runTool(toolUse)
+          workingMessages = workingMessages.concat([
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'tool_result',
+                  tool_use_id: toolUse.id,
+                  content: JSON.stringify(result),
+                },
+              ],
+            },
+          ])
+        }
+      }
+
+      if (!assistantText) {
+        assistantText = 'I can help. What are you trying to write?'
+      }
+
+      const persistStartedAt = Date.now()
+      await sql`
+        INSERT INTO agent_messages (thread_id, role, content)
+        VALUES (${threadId}, 'assistant', ${assistantText})
+      `
+      const persistMs = Date.now() - persistStartedAt
+
+      const runtime = {
+        ...baseMeta,
+        provider_request_id: providerRequestId,
+        context_1m_active: context1MActive,
+        context_1m_fallback: context1MFallback,
+        tool_steps: toolSteps,
+        prompt_blocks: systemBuild.promptBlocks.map(({ content, ...rest }) => rest),
+        prompt_sections: systemBuild.sections,
+        context_window: contextWindow.debug,
+        context_messages: contextWindow.messages,
+        timings_ms: {
+          db_load: dbLoadMs,
+          prompt_compile: promptCompileMs,
+          model_wait: modelWaitMs,
+          persist: persistMs,
+          total: Date.now() - startedAt,
+        },
+      }
+
+      console.info('agent_chat_success', {
+        request_id: requestId,
+        thread_id: threadId,
+        mode,
+        model: AGENT_MODEL,
+        status: 200,
+        context_1m_requested: context1MRequested,
+        context_1m_active: context1MActive,
+        context_1m_fallback: context1MFallback,
+        estimated_input_tokens: estimatedInputTokens,
+        tool_steps: toolSteps,
+        total_ms: runtime.timings_ms.total,
+        deployment_skew: deploymentSkew,
       })
 
-      const content = resp.content || []
-      const toolUses = content.filter(isToolUseBlock)
-      const textParts = content
-        .filter((c: any) => c.type === 'text')
-        .map((c: any) => c.text)
-      if (textParts.length > 0) {
-        assistantText = textParts.join('\n\n').trim()
-      }
-
-      // Always append the assistant content (including tool_use blocks) so the next
-      // call has the proper tool_use ids in context.
-      workingMessages = workingMessages.concat([{ role: 'assistant', content }])
-
-      if (!activeTools || toolUses.length === 0) break
-
-      for (const tu of toolUses) {
-        const result = await runTool(tu)
-        workingMessages = workingMessages.concat([
-          {
-            role: 'user',
-            content: [
-              {
-                type: 'tool_result',
-                tool_use_id: tu.id,
-                content: JSON.stringify(result),
-              },
-            ],
-          },
-        ])
+      return {
+        assistant_message: assistantText,
+        thread_context: threadContext,
+        maybe_swipe_status: maybeSwipe
+          ? { swipe_id: maybeSwipe.id, status: maybeSwipe.status }
+          : null,
+        runtime,
       }
     }
 
-    if (!assistantText) {
-      assistantText = 'I can help. What are you trying to write?'
+    if (mode === 'json') {
+      const result = await runAgent()
+      return NextResponse.json(
+        {
+          ...result,
+          request_id: requestId,
+        },
+        { headers: responseHeaders }
+      )
     }
 
-    // Persist assistant reply
-    await sql`
-      INSERT INTO agent_messages (thread_id, role, content)
-      VALUES (${threadId}, 'assistant', ${assistantText})
-    `
+    const encoder = new TextEncoder()
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        void (async () => {
+          writeSseEvent(controller, encoder, { type: 'meta', ...baseMeta })
 
-    return NextResponse.json({
-      assistant_message: assistantText,
-      thread_context: threadContext,
-      maybe_swipe_status: maybeSwipe
-        ? { swipe_id: maybeSwipe.id, status: maybeSwipe.status }
-        : null,
+          try {
+            const result = await runAgent((delta) => {
+              writeSseEvent(controller, encoder, {
+                type: 'delta',
+                delta,
+              })
+            })
+
+            writeSseEvent(controller, encoder, {
+              type: 'final',
+              ...result,
+              request_id: requestId,
+            })
+          } catch (error) {
+            const described = describeAgentError(error)
+
+            console.error('agent_chat_stream_error', {
+              request_id: requestId,
+              thread_id: threadId,
+              mode,
+              status: described.status,
+              code: described.code,
+              message: described.message,
+              deployment_skew: deploymentSkew,
+            })
+
+            writeSseEvent(controller, encoder, {
+              type: 'error',
+              request_id: requestId,
+              code: described.code,
+              error: described.message,
+            })
+          } finally {
+            controller.close()
+          }
+        })()
+      },
+    })
+
+    const streamHeaders = new Headers(responseHeaders)
+    streamHeaders.set('Content-Type', 'text/event-stream; charset=utf-8')
+    streamHeaders.set('Cache-Control', 'no-cache, no-transform')
+    streamHeaders.set('Connection', 'keep-alive')
+
+    return new Response(stream, {
+      status: 200,
+      headers: streamHeaders,
     })
   } catch (error) {
-    console.error('Agent chat error:', error)
-    return NextResponse.json({ error: 'Agent chat failed' }, { status: 500 })
+    const described = describeAgentError(error)
+
+    console.error('agent_chat_error', {
+      request_id: requestId,
+      mode,
+      status: described.status,
+      code: described.code,
+      message: described.message,
+      total_ms: Date.now() - startedAt,
+      deployment_skew: deploymentSkew,
+    })
+
+    return NextResponse.json(
+      {
+        error: described.message,
+        code: described.code,
+        request_id: requestId,
+      },
+      {
+        status: described.status,
+        headers: responseHeaders,
+      }
+    )
   }
 }

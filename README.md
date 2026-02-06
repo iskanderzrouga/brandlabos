@@ -16,7 +16,7 @@ Open [http://localhost:3000](http://localhost:3000) with your browser to see the
 
 ## Deploy (Netlify)
 
-This repo includes `netlify.toml` and uses `@netlify/plugin-nextjs`.
+This repo includes `netlify.toml` and uses Netlify's built-in Next.js runtime adapter.
 
 1. Create a new Netlify site from the GitHub repo (main branch).
 2. Set environment variables in Netlify (Site configuration → Environment variables):

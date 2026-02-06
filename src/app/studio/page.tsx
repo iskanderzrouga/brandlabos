@@ -76,6 +76,53 @@ type PromptDebugTrace = {
   context_messages?: Array<{ role: 'user' | 'assistant'; content: string }>
 }
 
+type RuntimeCallTrace = {
+  request_id?: string
+  provider_request_id?: string | null
+  model?: string
+  estimated_input_tokens?: number
+  context_1m_requested?: boolean
+  context_1m_active?: boolean
+  context_1m_fallback?: boolean
+  tool_steps?: number
+  max_steps?: number
+  deployment?: {
+    client_build_id?: string | null
+    server_build_id?: string | null
+    skew_detected?: boolean
+  }
+  timings_ms?: {
+    db_load?: number
+    prompt_compile?: number
+    model_wait?: number
+    persist?: number
+    total?: number
+  }
+}
+
+type AgentChatJsonResponse = {
+  error?: string
+  code?: string
+  request_id?: string
+  assistant_message?: string
+  thread_context?: ThreadContext
+  runtime?: RuntimeCallTrace
+}
+
+type AgentChatFinalEvent = {
+  type: 'final'
+  request_id?: string
+  assistant_message?: string
+  thread_context?: ThreadContext
+  runtime?: RuntimeCallTrace
+}
+
+type AgentChatStreamEvent =
+  | { type: 'meta'; request_id?: string; runtime?: RuntimeCallTrace; [key: string]: unknown }
+  | { type: 'delta'; delta?: string }
+  | AgentChatFinalEvent
+  | { type: 'error'; request_id?: string; code?: string; error?: string }
+
 function extractDraftBlock(text: string): string | null {
   const match = text.match(/```draft\s*([\s\S]*?)\s*```/i)
   if (!match) return null
@@ -391,6 +438,65 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+function getClientBuildId() {
+  if (typeof window === 'undefined') return null
+  const nextData = (window as any).__NEXT_DATA__
+  if (nextData && typeof nextData.buildId === 'string') {
+    return nextData.buildId
+  }
+  return null
+}
+
+async function readAgentStreamEvents(
+  res: Response,
+  onEvent: (event: AgentChatStreamEvent) => void
+) {
+  const body = res.body
+  if (!body) throw new Error('Streaming response body missing')
+
+  const reader = body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  const flushChunk = (chunk: string) => {
+    const lines = chunk.split('\n')
+    const dataLines = lines
+      .map((line) => line.trimEnd())
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.slice(5).trimStart())
+
+    if (dataLines.length === 0) return
+
+    const rawPayload = dataLines.join('\n')
+    try {
+      const parsed = JSON.parse(rawPayload) as AgentChatStreamEvent
+      if (parsed && typeof parsed === 'object' && typeof (parsed as any).type === 'string') {
+        onEvent(parsed)
+      }
+    } catch {
+      // Ignore malformed event chunks.
+    }
+  }
+
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+
+    let separatorIndex = buffer.indexOf('\n\n')
+    while (separatorIndex >= 0) {
+      const chunk = buffer.slice(0, separatorIndex)
+      buffer = buffer.slice(separatorIndex + 2)
+      flushChunk(chunk)
+      separatorIndex = buffer.indexOf('\n\n')
+    }
+  }
+
+  if (buffer.trim()) {
+    flushChunk(buffer)
+  }
+}
+
 export default function GeneratePage() {
   const { selectedProduct, openContextDrawer, setContextDrawerExtra, setTopBarExtra } = useAppContext()
 
@@ -433,6 +539,7 @@ export default function GeneratePage() {
   const [historyVersion, setHistoryVersion] = useState(0)
   const [promptPreview, setPromptPreview] = useState<string | null>(null)
   const [promptDebug, setPromptDebug] = useState<PromptDebugTrace | null>(null)
+  const [runtimeCall, setRuntimeCall] = useState<RuntimeCallTrace | null>(null)
   const [promptPreviewOpen, setPromptPreviewOpen] = useState(false)
   const [conversationOpen, setConversationOpen] = useState(false)
   const [feedback, setFeedback] = useState<{ tone: 'info' | 'success' | 'error'; message: string } | null>(null)
@@ -580,6 +687,7 @@ export default function GeneratePage() {
     if (!id) return
     setThreadHydrating(true)
     setMessages([])
+    setRuntimeCall(null)
     setThreadId(null)
     setThreadContext({})
     setCanvasTabs([''])
@@ -654,6 +762,7 @@ export default function GeneratePage() {
       setThreadId(null)
       setThreadContext({})
       setMessages([])
+      setRuntimeCall(null)
       setCanvasTabs([''])
       setActiveTab(0)
       setDraftSavedAt(null)
@@ -821,6 +930,7 @@ export default function GeneratePage() {
         if (!threadId) {
           setPromptPreview(null)
           setPromptDebug(null)
+          setRuntimeCall(null)
           return
         }
         const res = await fetch(`/api/agent/threads/${threadId}/prompt?debug=1`)
@@ -1403,6 +1513,7 @@ export default function GeneratePage() {
     setThreadId(null)
     setThreadContext({})
     setMessages([])
+    setRuntimeCall(null)
     setCanvasTabs([''])
     setActiveTab(0)
     setDraftSavedAt(null)
@@ -1514,13 +1625,19 @@ export default function GeneratePage() {
       .filter(Boolean)
       .join('\n\n')
 
+    const pendingAssistantId = `assistant-pending-${Date.now()}`
+
     setSending(true)
     setComposer('')
     setSelectionQueue([])
     setQueueExpanded({})
     setActiveSelectionId(null)
     clearSelection()
-    setMessages((prev) => [...prev, { role: 'user', content: fullMessage }])
+    setMessages((prev) => [
+      ...prev,
+      { role: 'user', content: fullMessage },
+      { id: pendingAssistantId, role: 'assistant', content: '' },
+    ])
     setPromptPreviewOpen(false)
     if (text) {
       const derived = deriveThreadTitleFromMessage(text)
@@ -1542,32 +1659,151 @@ export default function GeneratePage() {
           .catch(() => {})
       }
 
-      let data: {
-        error?: string
-        assistant_message?: string
-        thread_context?: ThreadContext
-      } | null = null
+      const clientBuildId = getClientBuildId()
+      let data: AgentChatJsonResponse | null = null
       let lastStatus: number | null = null
       let lastError: string | null = null
 
       for (let attempt = 0; attempt < 2; attempt += 1) {
-        const res = await fetch('/api/agent/chat', {
+        const attemptMode: 'stream' | 'json' = attempt === 0 ? 'stream' : 'json'
+        const endpoint = attemptMode === 'json' ? '/api/agent/chat?mode=json' : '/api/agent/chat'
+        const requestHeaders: Record<string, string> = { 'Content-Type': 'application/json' }
+        if (clientBuildId) {
+          requestHeaders['x-client-build-id'] = clientBuildId
+        }
+
+        const res = await fetch(endpoint, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: requestHeaders,
+          cache: 'no-store',
           body: JSON.stringify({ thread_id: threadId, message: fullMessage }),
         })
 
-        data = await readJsonFromResponse<{
-          error?: string
-          assistant_message?: string
-          thread_context?: ThreadContext
-        }>(res)
+        const headerRequestId = res.headers.get('x-request-id') || null
+        const headerServerBuildId = res.headers.get('x-server-build-id') || null
+        if (headerRequestId || headerServerBuildId || clientBuildId) {
+          setRuntimeCall((prev) => {
+            const previousDeployment = prev?.deployment || {}
+            const nextClientBuild = clientBuildId || previousDeployment.client_build_id || null
+            const nextServerBuild = headerServerBuildId || previousDeployment.server_build_id || null
+            return {
+              ...(prev || {}),
+              request_id: headerRequestId || prev?.request_id,
+              deployment: {
+                ...previousDeployment,
+                client_build_id: nextClientBuild,
+                server_build_id: nextServerBuild,
+                skew_detected: Boolean(
+                  nextClientBuild && nextServerBuild && nextClientBuild !== nextServerBuild
+                ),
+              },
+            }
+          })
+        }
+
+        let sawFirstDelta = false
+        let streamFinal: AgentChatFinalEvent | null = null
+        let streamError: Error | null = null
 
         if (res.ok) {
           lastStatus = res.status
+
+          const contentType = res.headers.get('content-type') || ''
+          if (attemptMode === 'stream' && contentType.includes('text/event-stream')) {
+            let streamedText = ''
+            await readAgentStreamEvents(res, (event) => {
+              if (event.type === 'meta') {
+                const maybeRuntime = (event.runtime && typeof event.runtime === 'object'
+                  ? (event.runtime as RuntimeCallTrace)
+                  : null)
+                if (maybeRuntime) {
+                  setRuntimeCall((prev) => ({ ...(prev || {}), ...maybeRuntime }))
+                } else {
+                  setRuntimeCall((prev) => ({
+                    ...(prev || {}),
+                    request_id:
+                      (typeof event.request_id === 'string' && event.request_id) || prev?.request_id,
+                  }))
+                }
+                return
+              }
+
+              if (event.type === 'delta') {
+                const delta = typeof event.delta === 'string' ? event.delta : ''
+                if (!delta) return
+                sawFirstDelta = true
+                streamedText += delta
+                setMessages((prev) =>
+                  prev.map((message) =>
+                    message.id === pendingAssistantId
+                      ? { ...message, content: streamedText }
+                      : message
+                  )
+                )
+                return
+              }
+
+              if (event.type === 'final') {
+                streamFinal = event
+                const finalText =
+                  typeof event.assistant_message === 'string' ? event.assistant_message : streamedText
+                setMessages((prev) =>
+                  prev.map((message) =>
+                    message.id === pendingAssistantId
+                      ? { ...message, content: finalText }
+                      : message
+                  )
+                )
+                if (event.runtime && typeof event.runtime === 'object') {
+                  setRuntimeCall(event.runtime as RuntimeCallTrace)
+                }
+                return
+              }
+
+              if (event.type === 'error') {
+                const requestSuffix =
+                  typeof event.request_id === 'string' && event.request_id
+                    ? ` [request ${event.request_id}]`
+                    : ''
+                const codePrefix =
+                  typeof event.code === 'string' && event.code ? `${event.code}: ` : ''
+                streamError = new Error(
+                  `${codePrefix}${event.error || 'Agent chat failed.'}${requestSuffix}`.trim()
+                )
+              }
+            })
+
+            if (streamError) {
+              if (attempt === 0 && !sawFirstDelta) {
+                await sleep(350)
+                continue
+              }
+              throw streamError
+            }
+
+            const finalPayload = (streamFinal || {}) as Partial<AgentChatFinalEvent>
+            data = {
+              assistant_message: finalPayload.assistant_message,
+              thread_context: finalPayload.thread_context,
+              request_id: finalPayload.request_id || headerRequestId || undefined,
+              runtime: finalPayload.runtime,
+            }
+          } else {
+            data = await readJsonFromResponse<AgentChatJsonResponse>(res)
+          }
+
+          if (!data?.assistant_message) {
+            if (attempt === 0 && !sawFirstDelta) {
+              await sleep(350)
+              continue
+            }
+            throw new Error('Agent returned an invalid response format.')
+          }
+
           break
         }
 
+        data = await readJsonFromResponse<AgentChatJsonResponse>(res)
         lastStatus = res.status
         lastError = data?.error || null
         if (attempt === 0 && TRANSIENT_CHAT_STATUSES.has(res.status)) {
@@ -1575,8 +1811,13 @@ export default function GeneratePage() {
           continue
         }
 
+        const requestSuffix = data?.request_id
+          ? ` [request ${data.request_id}]`
+          : headerRequestId
+            ? ` [request ${headerRequestId}]`
+            : ''
         const fallback = data?.error ? data.error : `Agent chat failed (${res.status}).`
-        throw new Error(fallback)
+        throw new Error(`${fallback}${requestSuffix}`)
       }
 
       if (lastStatus == null || lastStatus >= 400) {
@@ -1594,7 +1835,21 @@ export default function GeneratePage() {
       setPendingAutoApply(false)
 
       setThreadContext((prev) => ({ ...prev, ...(data.thread_context || {}) }))
-      setMessages((prev) => [...prev, { role: 'assistant', content: assistantMessage }])
+      if (data.runtime && typeof data.runtime === 'object') {
+        setRuntimeCall(data.runtime)
+      }
+      setMessages((prev) => {
+        let found = false
+        const next = prev.map((message) => {
+          if (message.id !== pendingAssistantId) return message
+          found = true
+          return { ...message, content: assistantMessage }
+        })
+        if (!found) {
+          next.push({ role: 'assistant', content: assistantMessage })
+        }
+        return next
+      })
 
       if (draft) {
         if (shouldAutoApply) {
@@ -1607,7 +1862,10 @@ export default function GeneratePage() {
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to send'
       setFeedback({ tone: 'error', message: msg })
-      setMessages((prev) => [...prev, { role: 'tool', content: msg }])
+      setMessages((prev) => {
+        const withoutPending = prev.filter((message) => message.id !== pendingAssistantId)
+        return [...withoutPending, { role: 'tool', content: msg }]
+      })
     } finally {
       pendingAutoApplyRef.current = false
       setPendingAutoApply(false)
@@ -1883,6 +2141,16 @@ export default function GeneratePage() {
           </button>
         </div>
         <div className="p-4 space-y-3 max-h-[60vh] overflow-auto">
+          {runtimeCall && (
+            <div className="rounded-2xl border border-[var(--editor-border)] bg-[var(--editor-panel-muted)] p-3">
+              <p className="text-[10px] uppercase tracking-[0.25em] text-[var(--editor-ink-muted)]">
+                Runtime call
+              </p>
+              <pre className="mt-2 whitespace-pre-wrap text-[12px] leading-5 text-[var(--editor-ink)]">
+                {JSON.stringify(runtimeCall, null, 2)}
+              </pre>
+            </div>
+          )}
           {promptPreview && (
             <div className="rounded-2xl border border-[var(--editor-border)] bg-[var(--editor-panel-muted)] p-3">
               <p className="text-[10px] uppercase tracking-[0.25em] text-[var(--editor-ink-muted)]">

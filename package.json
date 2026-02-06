@@ -22,14 +22,13 @@
     "zod": "^4.1.13"
   },
   "devDependencies": {
-    "@netlify/plugin-nextjs": "^5.15.1",
+    "@supabase/supabase-js": "^2.86.2",
     "@tailwindcss/postcss": "^4",
     "@types/bcryptjs": "^2.4.6",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@types/uuid": "^10.0.0",
-    "@supabase/supabase-js": "^2.86.2",
     "eslint": "^9",
     "eslint-config-next": "16.0.7",
     "tailwindcss": "^4",

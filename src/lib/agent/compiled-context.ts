@@ -209,6 +209,12 @@ export function buildSystemPrompt(args: {
   )
   const skillGuidance = skillSource.content
   const writingRules = writingRulesSource.content
+  const outputContract = `## OUTPUT CONTRACT
+- Non-writing replies: one short sentence OR 1-2 bullets. Never use \`\`\`draft.
+- Writing replies: output ONLY one \`\`\`draft block and nothing before/after it.
+- Keep meta commentary outside drafts. Draft body should be final usable content only.
+- Versions rule: if all versions are requested, include headings through ## Version ${versions}.
+- If only one version is requested, output only that version heading inside the draft block.`
 
   const sections: string[] = []
   const sectionDebug: PromptSectionInfo[] = []
@@ -225,6 +231,7 @@ export function buildSystemPrompt(args: {
   pushSection('current_skill', `## CURRENT SKILL\n${skill}`)
   if (skillGuidance) pushSection('skill_guidance', `## SKILL GUIDANCE\n${skillGuidance}`)
   if (writingRules) pushSection('writing_rules', `## WRITING RULES\n${writingRules}`)
+  pushSection('output_contract', outputContract)
 
   pushSection(
     'product',

@@ -136,6 +136,69 @@ function extractDraftBody(text: string): string | null {
   return String(match[1] || '').trim()
 }
 
+function normalizeVersionHeadingLine(line: string): string {
+  const match = line.match(
+    /^\s*(?:\*{1,2}\s*)?(?:#{1,4}\s*)?(?:version|v)\s*([1-9]\d*)\s*(?:\*{1,2})?\s*:?\s*$/i
+  )
+  if (!match) return line
+  return `## Version ${match[1]}`
+}
+
+function isInstructionEchoLine(line: string): boolean {
+  const text = line.trim().toLowerCase()
+  if (!text) return false
+  if (text.length > 180) return false
+
+  return (
+    text.includes('writing requests must return draft block only') ||
+    text.includes('no text before or after the draft block') ||
+    text.includes('versions format') ||
+    text.includes('default drafts count') ||
+    text.includes('non-draft replies must be ultra-brief') ||
+    text.includes('if {{versions}} > 1') ||
+    text.includes('output only') ||
+    text === '...'
+  )
+}
+
+function isStructuredDraftLine(line: string): boolean {
+  const text = line.trim()
+  if (!text) return false
+  return (
+    /^##\s*Version\s*\d+/i.test(text) ||
+    /^#{1,4}\s+\S+/.test(text) ||
+    /^([-*]|\d+[.)])\s+/.test(text)
+  )
+}
+
+function normalizeLooseDraftBody(raw: string): string {
+  const normalized = raw.replace(/\r\n/g, '\n')
+  let lines = normalized.split('\n').map((line) => normalizeVersionHeadingLine(line.trimEnd()))
+  lines = lines.filter((line) => !isInstructionEchoLine(line))
+
+  while (lines.length > 0 && !lines[0].trim()) lines.shift()
+  while (lines.length > 0 && !lines[lines.length - 1].trim()) lines.pop()
+
+  const firstStructuredIndex = lines.findIndex(isStructuredDraftLine)
+  if (firstStructuredIndex > 0) {
+    const intro = lines.slice(0, firstStructuredIndex).join(' ').trim().toLowerCase()
+    const introLooksLikePreamble =
+      intro.length <= 260 ||
+      intro.includes('here are') ||
+      intro.includes('below') ||
+      intro.includes('designed to') ||
+      intro.includes('for each version') ||
+      intro.startsWith('these') ||
+      intro.startsWith('this ')
+    if (introLooksLikePreamble) {
+      lines = lines.slice(firstStructuredIndex)
+    }
+  }
+
+  const body = lines.join('\n').trim()
+  return body || normalized.trim()
+}
+
 function isWritingIntent(messageText: string): boolean {
   const text = messageText.toLowerCase()
   return (
@@ -166,43 +229,106 @@ function looksLikeDraftPayload(text: string): boolean {
   return hasVersionHeading || hasPromptLikeLanguage || (lines.length >= 6 && (hasList || hasHeading))
 }
 
+function userRequestedAllVersions(messageText: string, versions: number): boolean {
+  if (versions <= 1) return false
+  const text = messageText.toLowerCase()
+  if (text.includes('for each version') || text.includes('each version') || text.includes('all versions')) {
+    return true
+  }
+  if (text.includes('v1') && text.includes('v2')) return true
+  if (/version\s*1[\s\S]*version\s*2/i.test(messageText)) return true
+  if (/version\s*2[\s\S]*version\s*3/i.test(messageText)) return true
+  return false
+}
+
+function getVersionHeadingNumbers(text: string): Set<number> {
+  const numbers = new Set<number>()
+  const regex = /^##\s*Version\s*(\d+)\s*$/gim
+  let match: RegExpExecArray | null
+  while ((match = regex.exec(text))) {
+    const value = Number(match[1])
+    if (Number.isFinite(value) && value > 0) numbers.add(value)
+  }
+  return numbers
+}
+
+function distributeDraftAcrossVersions(body: string, versions: number): string | null {
+  if (versions <= 1) return null
+  const blocks = body
+    .split(/\n{2,}/)
+    .map((block) => block.trim())
+    .filter(Boolean)
+  if (blocks.length < versions) return null
+
+  const perVersion = Math.ceil(blocks.length / versions)
+  const sections: string[] = []
+  for (let i = 0; i < versions; i += 1) {
+    const start = i * perVersion
+    const end = Math.min(blocks.length, start + perVersion)
+    const chunk = blocks.slice(start, end)
+    if (chunk.length === 0) break
+    sections.push(`## Version ${i + 1}\n${chunk.join('\n\n')}`.trim())
+  }
+  if (sections.length === 0) return null
+  return sections.join('\n\n')
+}
+
 function ensureDraftEnvelope(args: {
   assistantText: string
   userMessage: string
   versions: number
-}): { text: string; coerced: boolean } {
+}): { text: string; coerced: boolean; distributed: boolean; version_headings: number } {
   const { assistantText, userMessage, versions } = args
   const trimmed = assistantText.trim()
-  if (!trimmed) return { text: assistantText, coerced: false }
+  if (!trimmed) return { text: assistantText, coerced: false, distributed: false, version_headings: 0 }
 
   const existingDraftBody = extractDraftBody(trimmed)
+  let distributed = false
   if (existingDraftBody) {
-    let body = existingDraftBody
-    if (versions > 1 && !/^##\s*Version\s*\d+/im.test(body)) {
+    let body = normalizeLooseDraftBody(existingDraftBody)
+    const hasVersionHeading = /^##\s*Version\s*\d+/im.test(body)
+    if (versions > 1 && !hasVersionHeading) {
       body = `## Version 1\n${body}`.trim()
     }
+    const versionHeadings = getVersionHeadingNumbers(body).size
     return {
       text: `\`\`\`draft\n${body}\n\`\`\``,
       coerced: true,
+      distributed,
+      version_headings: versionHeadings,
     }
   }
 
   if (!isWritingIntent(userMessage)) {
-    return { text: assistantText, coerced: false }
+    return { text: assistantText, coerced: false, distributed: false, version_headings: 0 }
   }
 
   if (!looksLikeDraftPayload(trimmed)) {
-    return { text: assistantText, coerced: false }
+    return { text: assistantText, coerced: false, distributed: false, version_headings: 0 }
   }
 
-  let body = trimmed
-  if (versions > 1 && !/^##\s*Version\s*\d+/im.test(body)) {
+  let body = normalizeLooseDraftBody(trimmed)
+  let versionHeadings = getVersionHeadingNumbers(body).size
+
+  if (versions > 1 && versionHeadings === 0 && userRequestedAllVersions(userMessage, versions)) {
+    const distributedBody = distributeDraftAcrossVersions(body, versions)
+    if (distributedBody) {
+      body = distributedBody
+      distributed = true
+      versionHeadings = getVersionHeadingNumbers(body).size
+    }
+  }
+
+  if (versions > 1 && versionHeadings === 0) {
     body = `## Version 1\n${body}`.trim()
+    versionHeadings = 1
   }
 
   return {
     text: `\`\`\`draft\n${body}\n\`\`\``,
     coerced: true,
+    distributed,
+    version_headings: versionHeadings,
   }
 }
 
@@ -868,6 +994,8 @@ export async function POST(request: NextRequest) {
         context_window: contextWindow.debug,
         context_messages: contextWindow.messages,
         draft_coerced: draftEnvelope.coerced,
+        draft_distributed: draftEnvelope.distributed,
+        draft_version_headings: draftEnvelope.version_headings,
         timings_ms: {
           db_load: dbLoadMs,
           prompt_compile: promptCompileMs,
@@ -889,6 +1017,8 @@ export async function POST(request: NextRequest) {
         estimated_input_tokens: estimatedInputTokens,
         tool_steps: toolSteps,
         draft_coerced: draftEnvelope.coerced,
+        draft_distributed: draftEnvelope.distributed,
+        draft_version_headings: draftEnvelope.version_headings,
         total_ms: runtime.timings_ms.total,
         deployment_skew: deploymentSkew,
       })

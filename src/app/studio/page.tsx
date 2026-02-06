@@ -129,45 +129,44 @@ function extractDraftBlock(text: string): string | null {
   return match[1].trim()
 }
 
-function isWritingIntentMessage(text: string) {
-  return /\b(write|draft|rewrite|generate|create|script|hooks?|angles?|headlines?|ideas?|versions?)\b/i.test(
-    text
+function normalizeVersionHeadingLine(line: string): string {
+  const match = line.match(
+    /^\s*(?:\*{1,2}\s*)?(?:#{1,4}\s*)?(?:version|v)\s*([1-9]\d*)\s*(?:\*{1,2})?\s*:?\s*$/i
   )
+  if (!match) return line
+  return `## Version ${match[1]}`
 }
 
-function looksLikeDraftPayload(text: string) {
-  const trimmed = text.trim()
-  if (!trimmed || trimmed.length < 140) return false
-  const lines = trimmed
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
-  const hasVersionHeading = lines.some((line) => /^#{1,4}\s*version\s*\d+/i.test(line))
-  const hasList = lines.some((line) => /^([-*]|\d+[.)])\s+/.test(line))
-  const hasHeading = lines.some((line) => /^#{1,4}\s+\S+/.test(line))
-  return hasVersionHeading || (lines.length >= 6 && (hasList || hasHeading))
+function countDraftVersionHeadings(draft: string): number {
+  const set = new Set<number>()
+  const regex = /^##\s*Version\s*(\d+)\s*$/gim
+  let match: RegExpExecArray | null
+  while ((match = regex.exec(draft))) {
+    const value = Number(match[1])
+    if (Number.isFinite(value) && value > 0) set.add(value)
+  }
+  return set.size
 }
 
 function coerceAssistantDraftEnvelope(text: string, userMessage: string, versions: number) {
+  void userMessage
   const trimmed = text.trim()
   if (!trimmed) return text
 
   const existingDraft = extractDraftBlock(trimmed)
-  if (existingDraft) {
-    let body = existingDraft
-    if (versions > 1 && !/^##\s*Version\s*\d+/im.test(body)) {
-      body = `## Version 1\n${body}`.trim()
-    }
-    return `\`\`\`draft\n${body}\n\`\`\``
-  }
+  if (!existingDraft) return text
 
-  if (!isWritingIntentMessage(userMessage)) return text
-  if (!looksLikeDraftPayload(trimmed)) return text
+  let body = existingDraft
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map((line) => normalizeVersionHeadingLine(line.trimEnd()))
+    .join('\n')
+    .trim()
 
-  let body = trimmed
   if (versions > 1 && !/^##\s*Version\s*\d+/im.test(body)) {
     body = `## Version 1\n${body}`.trim()
   }
+
   return `\`\`\`draft\n${body}\n\`\`\``
 }
 
@@ -2439,6 +2438,7 @@ export default function GeneratePage() {
                     const messageKey = m.id || `${idx}`
                     const draftParts = m.role === 'assistant' ? splitDraftMessage(m.content) : { before: m.content, draft: null, after: '' }
                     const draft = draftParts.draft
+                    const draftVersionCount = draft ? countDraftVersionHeadings(draft) : 0
 
                     return (
                       <div key={messageKey} className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
@@ -2462,6 +2462,12 @@ export default function GeneratePage() {
                               <div className="text-[11px] font-semibold text-[var(--editor-ink)]">
                                 Draft ready for canvas
                               </div>
+                              {versions > 1 && draftVersionCount > 0 && draftVersionCount < versions && (
+                                <p className="mt-2 text-[11px] text-[var(--editor-ink-muted)]">
+                                  Contains {draftVersionCount}/{versions} versions. Ask for missing versions by tab
+                                  (example: &quot;write Version 2 and Version 3 only&quot;).
+                                </p>
+                              )}
 
                               <div className="mt-3 flex items-center gap-2">
                                 <button

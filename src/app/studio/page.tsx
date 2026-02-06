@@ -214,6 +214,16 @@ function looksLikeDraftPayload(text: string) {
   return hasVersionHeading || hasVersionMarker || (lines.length >= 6 && (hasList || hasHeading))
 }
 
+function extractLiveDraftBody(text: string, userMessage: string): string | null {
+  const trimmed = text.trim()
+  if (!trimmed) return null
+  const draft = extractDraftBlock(trimmed)
+  if (draft) return normalizeLooseDraftBody(draft)
+  if (!isWritingIntentMessage(userMessage)) return null
+  if (!looksLikeDraftPayload(trimmed)) return null
+  return normalizeLooseDraftBody(trimmed)
+}
+
 function countDraftVersionHeadings(draft: string): number {
   const normalized = draft
     .replace(/\r\n/g, '\n')
@@ -251,6 +261,14 @@ function coerceAssistantDraftEnvelope(text: string, userMessage: string, version
   }
 
   return `\`\`\`draft\n${body}\n\`\`\``
+}
+
+function areTabsEqual(a: string[], b: string[]) {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false
+  }
+  return true
 }
 
 function splitDraftMessage(text: string): { before: string; draft: string | null; after: string } {
@@ -1762,6 +1780,9 @@ export default function GeneratePage() {
       .filter(Boolean)
       .join('\n\n')
 
+    const requestLooksLikeDraft = isWritingIntentMessage(fullMessage)
+    const canvasEmptyAtSend = canvasRef.current.every((t) => !t.trim())
+    const streamDraftToCanvas = requestLooksLikeDraft && (canvasEmptyAtSend || hasQueuedNotes)
     const pendingAssistantId = `assistant-pending-${Date.now()}`
 
     setSending(true)
@@ -1773,7 +1794,11 @@ export default function GeneratePage() {
     setMessages((prev) => [
       ...prev,
       { role: 'user', content: fullMessage },
-      { id: pendingAssistantId, role: 'assistant', content: '' },
+      {
+        id: pendingAssistantId,
+        role: 'assistant',
+        content: streamDraftToCanvas ? 'Drafting in canvas...' : '',
+      },
     ])
     setPromptPreviewOpen(false)
     if (text) {
@@ -1876,13 +1901,25 @@ export default function GeneratePage() {
                 sawFirstDelta = true
                 streamedText += delta
                 fallbackAssistantMessage = streamedText
-                setMessages((prev) =>
-                  prev.map((message) =>
-                    message.id === pendingAssistantId
-                      ? { ...message, content: streamedText }
-                      : message
+                if (streamDraftToCanvas) {
+                  const liveDraftBody = extractLiveDraftBody(streamedText, fullMessage)
+                  if (liveDraftBody && liveDraftBody.trim()) {
+                    const split = splitDraftVersions(liveDraftBody, versions)
+                    if (!areTabsEqual(canvasRef.current, split)) {
+                      setCanvasTabs(split)
+                    }
+                    const firstFilled = split.findIndex((tab) => tab.trim().length > 0)
+                    if (firstFilled >= 0) setActiveTab(firstFilled)
+                  }
+                } else {
+                  setMessages((prev) =>
+                    prev.map((message) =>
+                      message.id === pendingAssistantId
+                        ? { ...message, content: streamedText }
+                        : message
+                    )
                   )
-                )
+                }
                 return
               }
 
@@ -1891,13 +1928,23 @@ export default function GeneratePage() {
                 const finalText =
                   typeof event.assistant_message === 'string' ? event.assistant_message : streamedText
                 fallbackAssistantMessage = finalText
-                setMessages((prev) =>
-                  prev.map((message) =>
-                    message.id === pendingAssistantId
-                      ? { ...message, content: finalText }
-                      : message
+                if (streamDraftToCanvas) {
+                  setMessages((prev) =>
+                    prev.map((message) =>
+                      message.id === pendingAssistantId
+                        ? { ...message, content: 'Draft ready in canvas.' }
+                        : message
+                    )
                   )
-                )
+                } else {
+                  setMessages((prev) =>
+                    prev.map((message) =>
+                      message.id === pendingAssistantId
+                        ? { ...message, content: finalText }
+                        : message
+                    )
+                  )
+                }
                 if (event.runtime && typeof event.runtime === 'object') {
                   setRuntimeCall(event.runtime as RuntimeCallTrace)
                 }
@@ -2008,7 +2055,6 @@ export default function GeneratePage() {
         versions
       )
       const draft = extractDraftBlock(assistantMessage)
-      const canvasEmpty = canvasRef.current.every((t) => !t.trim())
       const shouldAutoApply = pendingAutoApplyRef.current
       pendingAutoApplyRef.current = false
       setPendingAutoApply(false)
@@ -2022,10 +2068,16 @@ export default function GeneratePage() {
         const next = prev.map((message) => {
           if (message.id !== pendingAssistantId) return message
           found = true
+          if (streamDraftToCanvas && draft) {
+            return { ...message, content: 'Draft ready in canvas.' }
+          }
           return { ...message, content: assistantMessage }
         })
         if (!found) {
-          next.push({ role: 'assistant', content: assistantMessage })
+          next.push({
+            role: 'assistant',
+            content: streamDraftToCanvas && draft ? 'Draft ready in canvas.' : assistantMessage,
+          })
         }
         return next
       })
@@ -2033,8 +2085,11 @@ export default function GeneratePage() {
       if (draft) {
         if (shouldAutoApply) {
           applyDraftAuto(draft)
-        } else if (canvasEmpty) {
-          insertDraftIntoCanvas(draft, 'replace')
+        } else if (canvasEmptyAtSend || streamDraftToCanvas) {
+          const split = splitDraftVersions(draft, versions)
+          setCanvasTabs(split)
+          const firstFilled = split.findIndex((tab) => tab.trim().length > 0)
+          if (firstFilled >= 0) setActiveTab(firstFilled)
         }
       }
       if (hadPartialStreamError) {

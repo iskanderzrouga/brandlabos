@@ -138,10 +138,12 @@ function extractDraftBody(text: string): string | null {
 
 function normalizeVersionHeadingLine(line: string): string {
   const match = line.match(
-    /^\s*(?:\*{1,2}\s*)?(?:#{1,4}\s*)?(?:version|v)\s*([1-9]\d*)\s*(?:\*{1,2})?\s*:?\s*$/i
+    /^\s*(?:\*{1,2}\s*)?(?:#{1,4}\s*)?(?:version|v)\s*([1-9]\d*)\s*(?:[-:–—]\s*(.+))?\s*(?:\*{1,2})?\s*$/i
   )
   if (!match) return line
-  return `## Version ${match[1]}`
+  const label = String(match[2] || '').trim()
+  if (!label) return `## Version ${match[1]}`
+  return `## Version ${match[1]}\n${label}`
 }
 
 function isInstructionEchoLine(line: string): boolean {
@@ -166,6 +168,7 @@ function isStructuredDraftLine(line: string): boolean {
   if (!text) return false
   return (
     /^##\s*Version\s*\d+/i.test(text) ||
+    /^(?:#{0,4}\s*)?(?:version|v)\s*\d+\b/i.test(text) ||
     /^#{1,4}\s+\S+/.test(text) ||
     /^([-*]|\d+[.)])\s+/.test(text)
   )
@@ -221,12 +224,13 @@ function looksLikeDraftPayload(text: string): boolean {
     .filter(Boolean)
 
   const hasVersionHeading = lines.some((line) => /^#{1,4}\s*version\s*\d+/i.test(line))
+  const hasVersionMarker = lines.some((line) => /^(?:#{0,4}\s*)?(?:version|v)\s*\d+\b/i.test(line))
   const hasList = lines.some((line) => /^([-*]|\d+[.)])\s+/.test(line))
   const hasHeading = lines.some((line) => /^#{1,4}\s+\S+/.test(line))
   const hasPromptLikeLanguage =
     /image prompt|prompt ideas|version 1|hook|angle|script/i.test(trimmed) && lines.length >= 6
 
-  return hasVersionHeading || hasPromptLikeLanguage || (lines.length >= 6 && (hasList || hasHeading))
+  return hasVersionHeading || hasVersionMarker || hasPromptLikeLanguage || (lines.length >= 6 && (hasList || hasHeading))
 }
 
 function userRequestedAllVersions(messageText: string, versions: number): boolean {
@@ -243,7 +247,7 @@ function userRequestedAllVersions(messageText: string, versions: number): boolea
 
 function getVersionHeadingNumbers(text: string): Set<number> {
   const numbers = new Set<number>()
-  const regex = /^##\s*Version\s*(\d+)\s*$/gim
+  const regex = /^##\s*Version\s*(\d+)\b.*$/gim
   let match: RegExpExecArray | null
   while ((match = regex.exec(text))) {
     const value = Number(match[1])

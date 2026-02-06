@@ -131,17 +131,100 @@ function extractDraftBlock(text: string): string | null {
 
 function normalizeVersionHeadingLine(line: string): string {
   const match = line.match(
-    /^\s*(?:\*{1,2}\s*)?(?:#{1,4}\s*)?(?:version|v)\s*([1-9]\d*)\s*(?:\*{1,2})?\s*:?\s*$/i
+    /^\s*(?:\*{1,2}\s*)?(?:#{1,4}\s*)?(?:version|v)\s*([1-9]\d*)\s*(?:[-:–—]\s*(.+))?\s*(?:\*{1,2})?\s*$/i
   )
   if (!match) return line
-  return `## Version ${match[1]}`
+  const label = String(match[2] || '').trim()
+  if (!label) return `## Version ${match[1]}`
+  return `## Version ${match[1]}\n${label}`
+}
+
+function isWritingIntentMessage(text: string) {
+  return /\b(write|draft|rewrite|generate|create|script|hooks?|angles?|headlines?|ideas?|versions?)\b/i.test(
+    text
+  )
+}
+
+function isInstructionEchoLine(line: string): boolean {
+  const text = line.trim().toLowerCase()
+  if (!text) return false
+  if (text.length > 180) return false
+  return (
+    text.includes('writing requests must return draft block only') ||
+    text.includes('no text before or after the draft block') ||
+    text.includes('versions format') ||
+    text.includes('default drafts count') ||
+    text.includes('non-draft replies must be ultra-brief') ||
+    text.includes('if {{versions}} > 1') ||
+    text.includes('output only') ||
+    text === '...'
+  )
+}
+
+function isStructuredDraftLine(line: string): boolean {
+  const text = line.trim()
+  if (!text) return false
+  return (
+    /^##\s*Version\s*\d+/i.test(text) ||
+    /^(?:#{0,4}\s*)?(?:version|v)\s*\d+\b/i.test(text) ||
+    /^#{1,4}\s+\S+/.test(text) ||
+    /^([-*]|\d+[.)])\s+/.test(text)
+  )
+}
+
+function normalizeLooseDraftBody(raw: string) {
+  const normalized = raw.replace(/\r\n/g, '\n')
+  let lines = normalized.split('\n').map((line) => normalizeVersionHeadingLine(line.trimEnd()))
+  lines = lines.filter((line) => !isInstructionEchoLine(line))
+
+  while (lines.length > 0 && !lines[0].trim()) lines.shift()
+  while (lines.length > 0 && !lines[lines.length - 1].trim()) lines.pop()
+
+  const firstStructuredIndex = lines.findIndex(isStructuredDraftLine)
+  if (firstStructuredIndex > 0) {
+    const intro = lines.slice(0, firstStructuredIndex).join(' ').trim().toLowerCase()
+    const introLooksLikePreamble =
+      intro.length <= 260 ||
+      intro.includes('here are') ||
+      intro.includes('below') ||
+      intro.includes('designed to') ||
+      intro.includes('for each version') ||
+      intro.startsWith('these') ||
+      intro.startsWith('this ')
+    if (introLooksLikePreamble) {
+      lines = lines.slice(firstStructuredIndex)
+    }
+  }
+
+  const body = lines.join('\n').trim()
+  return body || normalized.trim()
+}
+
+function looksLikeDraftPayload(text: string) {
+  const trimmed = text.trim()
+  if (!trimmed || trimmed.length < 140) return false
+  const lines = trimmed
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+  const hasVersionHeading = lines.some((line) => /^#{1,4}\s*version\s*\d+/i.test(line))
+  const hasVersionMarker = lines.some((line) => /^(?:#{0,4}\s*)?(?:version|v)\s*\d+\b/i.test(line))
+  const hasList = lines.some((line) => /^([-*]|\d+[.)])\s+/.test(line))
+  const hasHeading = lines.some((line) => /^#{1,4}\s+\S+/.test(line))
+  return hasVersionHeading || hasVersionMarker || (lines.length >= 6 && (hasList || hasHeading))
 }
 
 function countDraftVersionHeadings(draft: string): number {
+  const normalized = draft
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map((line) => normalizeVersionHeadingLine(line.trimEnd()))
+    .join('\n')
+
   const set = new Set<number>()
-  const regex = /^##\s*Version\s*(\d+)\s*$/gim
+  const regex = /^##\s*Version\s*(\d+)\b.*$/gim
   let match: RegExpExecArray | null
-  while ((match = regex.exec(draft))) {
+  while ((match = regex.exec(normalized))) {
     const value = Number(match[1])
     if (Number.isFinite(value) && value > 0) set.add(value)
   }
@@ -149,19 +232,19 @@ function countDraftVersionHeadings(draft: string): number {
 }
 
 function coerceAssistantDraftEnvelope(text: string, userMessage: string, versions: number) {
-  void userMessage
   const trimmed = text.trim()
   if (!trimmed) return text
 
   const existingDraft = extractDraftBlock(trimmed)
-  if (!existingDraft) return text
+  let body: string
 
-  let body = existingDraft
-    .replace(/\r\n/g, '\n')
-    .split('\n')
-    .map((line) => normalizeVersionHeadingLine(line.trimEnd()))
-    .join('\n')
-    .trim()
+  if (existingDraft) {
+    body = normalizeLooseDraftBody(existingDraft)
+  } else {
+    if (!isWritingIntentMessage(userMessage)) return text
+    if (!looksLikeDraftPayload(trimmed)) return text
+    body = normalizeLooseDraftBody(trimmed)
+  }
 
   if (versions > 1 && !/^##\s*Version\s*\d+/im.test(body)) {
     body = `## Version 1\n${body}`.trim()
@@ -179,18 +262,24 @@ function splitDraftMessage(text: string): { before: string; draft: string | null
 }
 
 function splitDraftVersions(draft: string, versions: number): string[] {
+  const normalizedDraft = draft
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map((line) => normalizeVersionHeadingLine(line.trimEnd()))
+    .join('\n')
+
   const out = Array.from({ length: versions }, () => '')
-  const re = /^##\s*Version\s*(\d+)\s*$/gim
+  const re = /^##\s*Version\s*(\d+)\b.*$/gim
   const matches: Array<{ index: number; version: number; len: number }> = []
   let m: RegExpExecArray | null
-  while ((m = re.exec(draft))) {
+  while ((m = re.exec(normalizedDraft))) {
     const v = Number(m[1])
     if (!Number.isFinite(v)) continue
     matches.push({ index: m.index, version: v, len: m[0].length })
   }
 
   if (matches.length === 0) {
-    out[0] = draft.trim()
+    out[0] = normalizedDraft.trim()
     return out
   }
 
@@ -198,8 +287,8 @@ function splitDraftVersions(draft: string, versions: number): string[] {
     const cur = matches[i]
     const next = matches[i + 1]
     const start = cur.index + cur.len
-    const end = next ? next.index : draft.length
-    const body = draft.slice(start, end).trim()
+    const end = next ? next.index : normalizedDraft.length
+    const body = normalizedDraft.slice(start, end).trim()
     const idx = cur.version - 1
     if (idx >= 0 && idx < out.length) out[idx] = body
   }

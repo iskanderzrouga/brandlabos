@@ -130,6 +130,82 @@ function shouldEnableTools(messageText: string, threadContext: ThreadContext) {
   )
 }
 
+function extractDraftBody(text: string): string | null {
+  const match = text.match(/```draft\s*([\s\S]*?)\s*```/i)
+  if (!match) return null
+  return String(match[1] || '').trim()
+}
+
+function isWritingIntent(messageText: string): boolean {
+  const text = messageText.toLowerCase()
+  return (
+    /\b(write|draft|rewrite|generate|create|script|hooks?|angles?|headlines?|ideas?|versions?)\b/i.test(
+      messageText
+    ) ||
+    text.includes('for this script') ||
+    text.includes('for thisscripts') ||
+    text.includes('write just 1 draft')
+  )
+}
+
+function looksLikeDraftPayload(text: string): boolean {
+  const trimmed = text.trim()
+  if (!trimmed || trimmed.length < 140) return false
+
+  const lines = trimmed
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+
+  const hasVersionHeading = lines.some((line) => /^#{1,4}\s*version\s*\d+/i.test(line))
+  const hasList = lines.some((line) => /^([-*]|\d+[.)])\s+/.test(line))
+  const hasHeading = lines.some((line) => /^#{1,4}\s+\S+/.test(line))
+  const hasPromptLikeLanguage =
+    /image prompt|prompt ideas|version 1|hook|angle|script/i.test(trimmed) && lines.length >= 6
+
+  return hasVersionHeading || hasPromptLikeLanguage || (lines.length >= 6 && (hasList || hasHeading))
+}
+
+function ensureDraftEnvelope(args: {
+  assistantText: string
+  userMessage: string
+  versions: number
+}): { text: string; coerced: boolean } {
+  const { assistantText, userMessage, versions } = args
+  const trimmed = assistantText.trim()
+  if (!trimmed) return { text: assistantText, coerced: false }
+
+  const existingDraftBody = extractDraftBody(trimmed)
+  if (existingDraftBody) {
+    let body = existingDraftBody
+    if (versions > 1 && !/^##\s*Version\s*\d+/im.test(body)) {
+      body = `## Version 1\n${body}`.trim()
+    }
+    return {
+      text: `\`\`\`draft\n${body}\n\`\`\``,
+      coerced: true,
+    }
+  }
+
+  if (!isWritingIntent(userMessage)) {
+    return { text: assistantText, coerced: false }
+  }
+
+  if (!looksLikeDraftPayload(trimmed)) {
+    return { text: assistantText, coerced: false }
+  }
+
+  let body = trimmed
+  if (versions > 1 && !/^##\s*Version\s*\d+/im.test(body)) {
+    body = `## Version 1\n${body}`.trim()
+  }
+
+  return {
+    text: `\`\`\`draft\n${body}\n\`\`\``,
+    coerced: true,
+  }
+}
+
 function estimateInputTokens(systemPrompt: string, messages: Array<{ role: string; content: unknown }>) {
   let chars = systemPrompt.length
   for (const message of messages) {
@@ -767,6 +843,13 @@ export async function POST(request: NextRequest) {
         assistantText = 'I can help. What are you trying to write?'
       }
 
+      const draftEnvelope = ensureDraftEnvelope({
+        assistantText,
+        userMessage: messageText,
+        versions,
+      })
+      assistantText = draftEnvelope.text
+
       const persistStartedAt = Date.now()
       await sql`
         INSERT INTO agent_messages (thread_id, role, content)
@@ -784,6 +867,7 @@ export async function POST(request: NextRequest) {
         prompt_sections: systemBuild.sections,
         context_window: contextWindow.debug,
         context_messages: contextWindow.messages,
+        draft_coerced: draftEnvelope.coerced,
         timings_ms: {
           db_load: dbLoadMs,
           prompt_compile: promptCompileMs,
@@ -804,6 +888,7 @@ export async function POST(request: NextRequest) {
         context_1m_fallback: context1MFallback,
         estimated_input_tokens: estimatedInputTokens,
         tool_steps: toolSteps,
+        draft_coerced: draftEnvelope.coerced,
         total_ms: runtime.timings_ms.total,
         deployment_skew: deploymentSkew,
       })

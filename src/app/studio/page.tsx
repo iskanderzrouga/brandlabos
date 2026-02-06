@@ -129,6 +129,48 @@ function extractDraftBlock(text: string): string | null {
   return match[1].trim()
 }
 
+function isWritingIntentMessage(text: string) {
+  return /\b(write|draft|rewrite|generate|create|script|hooks?|angles?|headlines?|ideas?|versions?)\b/i.test(
+    text
+  )
+}
+
+function looksLikeDraftPayload(text: string) {
+  const trimmed = text.trim()
+  if (!trimmed || trimmed.length < 140) return false
+  const lines = trimmed
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+  const hasVersionHeading = lines.some((line) => /^#{1,4}\s*version\s*\d+/i.test(line))
+  const hasList = lines.some((line) => /^([-*]|\d+[.)])\s+/.test(line))
+  const hasHeading = lines.some((line) => /^#{1,4}\s+\S+/.test(line))
+  return hasVersionHeading || (lines.length >= 6 && (hasList || hasHeading))
+}
+
+function coerceAssistantDraftEnvelope(text: string, userMessage: string, versions: number) {
+  const trimmed = text.trim()
+  if (!trimmed) return text
+
+  const existingDraft = extractDraftBlock(trimmed)
+  if (existingDraft) {
+    let body = existingDraft
+    if (versions > 1 && !/^##\s*Version\s*\d+/im.test(body)) {
+      body = `## Version 1\n${body}`.trim()
+    }
+    return `\`\`\`draft\n${body}\n\`\`\``
+  }
+
+  if (!isWritingIntentMessage(userMessage)) return text
+  if (!looksLikeDraftPayload(trimmed)) return text
+
+  let body = trimmed
+  if (versions > 1 && !/^##\s*Version\s*\d+/im.test(body)) {
+    body = `## Version 1\n${body}`.trim()
+  }
+  return `\`\`\`draft\n${body}\n\`\`\``
+}
+
 function splitDraftMessage(text: string): { before: string; draft: string | null; after: string } {
   const match = text.match(/```draft\s*([\s\S]*?)\s*```/i)
   if (!match || match.index == null) return { before: text.trim(), draft: null, after: '' }
@@ -1875,7 +1917,11 @@ export default function GeneratePage() {
         throw new Error('Agent returned an invalid response format.')
       }
 
-      const assistantMessage = data.assistant_message
+      const assistantMessage = coerceAssistantDraftEnvelope(
+        data.assistant_message,
+        fullMessage,
+        versions
+      )
       const draft = extractDraftBlock(assistantMessage)
       const canvasEmpty = canvasRef.current.every((t) => !t.trim())
       const shouldAutoApply = pendingAutoApplyRef.current

@@ -245,6 +245,33 @@ function userRequestedAllVersions(messageText: string, versions: number): boolea
   return false
 }
 
+function parseRequestedVersionNumbers(messageText: string, versions: number): number[] {
+  if (versions <= 1) return []
+  const set = new Set<number>()
+
+  const rangeRegex = /(?:versions?|v)\s*([1-9]\d*)\s*(?:-|to|through)\s*([1-9]\d*)/gi
+  let rangeMatch: RegExpExecArray | null
+  while ((rangeMatch = rangeRegex.exec(messageText))) {
+    const a = Number(rangeMatch[1])
+    const b = Number(rangeMatch[2])
+    if (!Number.isFinite(a) || !Number.isFinite(b)) continue
+    const start = Math.max(1, Math.min(a, b))
+    const end = Math.min(versions, Math.max(a, b))
+    for (let v = start; v <= end; v += 1) set.add(v)
+  }
+
+  const singleRegex = /(?:\bversion\b|\bv)\s*([1-9]\d*)\b/gi
+  let singleMatch: RegExpExecArray | null
+  while ((singleMatch = singleRegex.exec(messageText))) {
+    const value = Number(singleMatch[1])
+    if (Number.isFinite(value) && value >= 1 && value <= versions) {
+      set.add(value)
+    }
+  }
+
+  return Array.from(set).sort((a, b) => a - b)
+}
+
 function getVersionHeadingNumbers(text: string): Set<number> {
   const numbers = new Set<number>()
   const regex = /^##\s*Version\s*(\d+)\b.*$/gim
@@ -254,6 +281,71 @@ function getVersionHeadingNumbers(text: string): Set<number> {
     if (Number.isFinite(value) && value > 0) numbers.add(value)
   }
   return numbers
+}
+
+function extractVersionSections(body: string): Map<number, string> {
+  const normalized = body
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map((line) => normalizeVersionHeadingLine(line.trimEnd()))
+    .join('\n')
+  const regex = /^##\s*Version\s*(\d+)\b.*$/gim
+  const matches: Array<{ index: number; version: number; len: number }> = []
+  let match: RegExpExecArray | null
+  while ((match = regex.exec(normalized))) {
+    const version = Number(match[1])
+    if (!Number.isFinite(version) || version <= 0) continue
+    matches.push({ index: match.index, version, len: match[0].length })
+  }
+
+  const map = new Map<number, string>()
+  for (let i = 0; i < matches.length; i += 1) {
+    const cur = matches[i]
+    const next = matches[i + 1]
+    const start = cur.index + cur.len
+    const end = next ? next.index : normalized.length
+    const sectionBody = normalized.slice(start, end).trim()
+    map.set(cur.version, sectionBody)
+  }
+  return map
+}
+
+function filterDraftToRequestedVersions(body: string, requestedVersions: number[]): string {
+  if (requestedVersions.length === 0) return body
+  const sections = extractVersionSections(body)
+  if (sections.size === 0) {
+    if (requestedVersions.length === 1) {
+      return `## Version ${requestedVersions[0]}\n${body}`.trim()
+    }
+    return body
+  }
+
+  const requestedSet = new Set(requestedVersions)
+  const chunks: string[] = []
+  for (const version of requestedVersions) {
+    const sectionBody = sections.get(version)
+    if (!sectionBody) continue
+    chunks.push(`## Version ${version}\n${sectionBody}`.trim())
+  }
+
+  if (chunks.length === 0) return body
+  return chunks.join('\n\n')
+}
+
+function summarizeDraftForContext(content: string): string {
+  const draftBody = extractDraftBody(content)
+  if (!draftBody) return content
+  if (content.length < 1800) return content
+
+  const normalized = normalizeLooseDraftBody(draftBody)
+  const versions = Array.from(getVersionHeadingNumbers(normalized)).sort((a, b) => a - b)
+  const versionText = versions.length > 0 ? versions.join(', ') : 'none'
+
+  return [
+    '[previous draft omitted for context]',
+    `versions: ${versionText}`,
+    `draft_chars: ${normalized.length}`,
+  ].join('\n')
 }
 
 function distributeDraftAcrossVersions(body: string, versions: number): string | null {
@@ -281,15 +373,34 @@ function ensureDraftEnvelope(args: {
   assistantText: string
   userMessage: string
   versions: number
-}): { text: string; coerced: boolean; distributed: boolean; version_headings: number } {
+}): {
+  text: string
+  coerced: boolean
+  distributed: boolean
+  version_headings: number
+  requested_versions: number[]
+} {
   const { assistantText, userMessage, versions } = args
   const trimmed = assistantText.trim()
-  if (!trimmed) return { text: assistantText, coerced: false, distributed: false, version_headings: 0 }
+  const requestedVersions = parseRequestedVersionNumbers(userMessage, versions)
+  if (!trimmed) {
+    return {
+      text: assistantText,
+      coerced: false,
+      distributed: false,
+      version_headings: 0,
+      requested_versions: requestedVersions,
+    }
+  }
 
   const existingDraftBody = extractDraftBody(trimmed)
   let distributed = false
+  const allVersionsRequested = userRequestedAllVersions(userMessage, versions)
   if (existingDraftBody) {
     let body = normalizeLooseDraftBody(existingDraftBody)
+    if (!allVersionsRequested && requestedVersions.length > 0) {
+      body = filterDraftToRequestedVersions(body, requestedVersions)
+    }
     const hasVersionHeading = /^##\s*Version\s*\d+/im.test(body)
     if (versions > 1 && !hasVersionHeading) {
       body = `## Version 1\n${body}`.trim()
@@ -300,21 +411,34 @@ function ensureDraftEnvelope(args: {
       coerced: true,
       distributed,
       version_headings: versionHeadings,
+      requested_versions: requestedVersions,
     }
   }
 
   if (!isWritingIntent(userMessage)) {
-    return { text: assistantText, coerced: false, distributed: false, version_headings: 0 }
+    return {
+      text: assistantText,
+      coerced: false,
+      distributed: false,
+      version_headings: 0,
+      requested_versions: requestedVersions,
+    }
   }
 
   if (!looksLikeDraftPayload(trimmed)) {
-    return { text: assistantText, coerced: false, distributed: false, version_headings: 0 }
+    return {
+      text: assistantText,
+      coerced: false,
+      distributed: false,
+      version_headings: 0,
+      requested_versions: requestedVersions,
+    }
   }
 
   let body = normalizeLooseDraftBody(trimmed)
   let versionHeadings = getVersionHeadingNumbers(body).size
 
-  if (versions > 1 && versionHeadings === 0 && userRequestedAllVersions(userMessage, versions)) {
+  if (versions > 1 && versionHeadings === 0 && allVersionsRequested) {
     const distributedBody = distributeDraftAcrossVersions(body, versions)
     if (distributedBody) {
       body = distributedBody
@@ -323,9 +447,19 @@ function ensureDraftEnvelope(args: {
     }
   }
 
+  if (!allVersionsRequested && requestedVersions.length > 0) {
+    body = filterDraftToRequestedVersions(body, requestedVersions)
+    versionHeadings = getVersionHeadingNumbers(body).size
+  }
+
   if (versions > 1 && versionHeadings === 0) {
-    body = `## Version 1\n${body}`.trim()
-    versionHeadings = 1
+    if (requestedVersions.length === 1 && !allVersionsRequested) {
+      body = `## Version ${requestedVersions[0]}\n${body}`.trim()
+      versionHeadings = 1
+    } else {
+      body = `## Version 1\n${body}`.trim()
+      versionHeadings = 1
+    }
   }
 
   return {
@@ -333,6 +467,7 @@ function ensureDraftEnvelope(args: {
     coerced: true,
     distributed,
     version_headings: versionHeadings,
+    requested_versions: requestedVersions,
   }
 }
 
@@ -696,8 +831,15 @@ export async function POST(request: NextRequest) {
       LIMIT ${AGENT_HISTORY_LIMIT}
     `
 
+    const contextHistoryRows = (
+      (historyRows as Array<{ role: string; content: string }>).reverse() || []
+    ).map((row) => {
+      if (row.role !== 'assistant') return row
+      return { ...row, content: summarizeDraftForContext(String(row.content || '')) }
+    })
+
     const contextWindow = buildAgentContextMessages(
-      (historyRows as Array<{ role: string; content: string }>).reverse(),
+      contextHistoryRows,
       {
         maxMessages: AGENT_CONTEXT_MAX_MESSAGES,
         maxChars: AGENT_CONTEXT_MAX_CHARS,
@@ -1000,6 +1142,7 @@ export async function POST(request: NextRequest) {
         draft_coerced: draftEnvelope.coerced,
         draft_distributed: draftEnvelope.distributed,
         draft_version_headings: draftEnvelope.version_headings,
+        requested_versions: draftEnvelope.requested_versions,
         timings_ms: {
           db_load: dbLoadMs,
           prompt_compile: promptCompileMs,
@@ -1023,6 +1166,7 @@ export async function POST(request: NextRequest) {
         draft_coerced: draftEnvelope.coerced,
         draft_distributed: draftEnvelope.distributed,
         draft_version_headings: draftEnvelope.version_headings,
+        requested_versions: draftEnvelope.requested_versions,
         total_ms: runtime.timings_ms.total,
         deployment_skew: deploymentSkew,
       })

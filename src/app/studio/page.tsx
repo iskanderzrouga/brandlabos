@@ -214,6 +214,45 @@ function looksLikeDraftPayload(text: string) {
   return hasVersionHeading || hasVersionMarker || (lines.length >= 6 && (hasList || hasHeading))
 }
 
+function parseRequestedVersionNumbers(messageText: string, versions: number): number[] {
+  if (versions <= 1) return []
+  const set = new Set<number>()
+
+  const rangeRegex = /(?:versions?|v)\s*([1-9]\d*)\s*(?:-|to|through)\s*([1-9]\d*)/gi
+  let rangeMatch: RegExpExecArray | null
+  while ((rangeMatch = rangeRegex.exec(messageText))) {
+    const a = Number(rangeMatch[1])
+    const b = Number(rangeMatch[2])
+    if (!Number.isFinite(a) || !Number.isFinite(b)) continue
+    const start = Math.max(1, Math.min(a, b))
+    const end = Math.min(versions, Math.max(a, b))
+    for (let v = start; v <= end; v += 1) set.add(v)
+  }
+
+  const singleRegex = /(?:\bversion\b|\bv)\s*([1-9]\d*)\b/gi
+  let singleMatch: RegExpExecArray | null
+  while ((singleMatch = singleRegex.exec(messageText))) {
+    const value = Number(singleMatch[1])
+    if (Number.isFinite(value) && value >= 1 && value <= versions) {
+      set.add(value)
+    }
+  }
+
+  return Array.from(set).sort((a, b) => a - b)
+}
+
+function isAllVersionsRequest(messageText: string, versions: number): boolean {
+  if (versions <= 1) return false
+  const text = messageText.toLowerCase()
+  return (
+    text.includes('for each version') ||
+    text.includes('each version') ||
+    text.includes('all versions') ||
+    (text.includes('v1') && text.includes('v2')) ||
+    /version\s*1[\s\S]*version\s*2/i.test(messageText)
+  )
+}
+
 function extractLiveDraftBody(text: string, userMessage: string): string | null {
   const trimmed = text.trim()
   if (!trimmed) return null
@@ -269,6 +308,43 @@ function areTabsEqual(a: string[], b: string[]) {
     if (a[i] !== b[i]) return false
   }
   return true
+}
+
+function mergeDraftIntoRequestedVersions(args: {
+  currentTabs: string[]
+  draft: string
+  split: string[]
+  requestedVersions: number[]
+  versions: number
+}) {
+  const { currentTabs, draft, split, requestedVersions, versions } = args
+  if (requestedVersions.length === 0) return split
+
+  const normalizedDraft = draft
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map((line) => normalizeVersionHeadingLine(line.trimEnd()))
+    .join('\n')
+
+  const hasAnyVersionHeading = /^##\s*Version\s*\d+\b/im.test(normalizedDraft)
+  const next = [...currentTabs]
+  let applied = false
+
+  for (const version of requestedVersions) {
+    const idx = version - 1
+    if (idx < 0 || idx >= versions) continue
+
+    let value = split[idx] || ''
+    if (!value && requestedVersions.length === 1 && !hasAnyVersionHeading) {
+      value = normalizedDraft.trim()
+    }
+
+    if (!value) continue
+    next[idx] = value
+    applied = true
+  }
+
+  return applied ? next : split
 }
 
 function splitDraftMessage(text: string): { before: string; draft: string | null; after: string } {
@@ -1781,8 +1857,16 @@ export default function GeneratePage() {
       .join('\n\n')
 
     const requestLooksLikeDraft = isWritingIntentMessage(fullMessage)
+    const requestedVersions = requestLooksLikeDraft
+      ? parseRequestedVersionNumbers(fullMessage, versions)
+      : []
+    const targetSpecificVersions =
+      requestedVersions.length > 0 &&
+      requestedVersions.length < versions &&
+      !isAllVersionsRequest(fullMessage, versions)
     const canvasEmptyAtSend = canvasRef.current.every((t) => !t.trim())
-    const streamDraftToCanvas = requestLooksLikeDraft && (canvasEmptyAtSend || hasQueuedNotes)
+    const streamDraftToCanvas =
+      requestLooksLikeDraft && (canvasEmptyAtSend || hasQueuedNotes || targetSpecificVersions)
     const pendingAssistantId = `assistant-pending-${Date.now()}`
 
     setSending(true)
@@ -1905,10 +1989,17 @@ export default function GeneratePage() {
                   const liveDraftBody = extractLiveDraftBody(streamedText, fullMessage)
                   if (liveDraftBody && liveDraftBody.trim()) {
                     const split = splitDraftVersions(liveDraftBody, versions)
-                    if (!areTabsEqual(canvasRef.current, split)) {
-                      setCanvasTabs(split)
+                    const nextTabs = mergeDraftIntoRequestedVersions({
+                      currentTabs: canvasRef.current,
+                      draft: liveDraftBody,
+                      split,
+                      requestedVersions,
+                      versions,
+                    })
+                    if (!areTabsEqual(canvasRef.current, nextTabs)) {
+                      setCanvasTabs(nextTabs)
                     }
-                    const firstFilled = split.findIndex((tab) => tab.trim().length > 0)
+                    const firstFilled = nextTabs.findIndex((tab) => tab.trim().length > 0)
                     if (firstFilled >= 0) setActiveTab(firstFilled)
                   }
                 } else {
@@ -2087,8 +2178,15 @@ export default function GeneratePage() {
           applyDraftAuto(draft)
         } else if (canvasEmptyAtSend || streamDraftToCanvas) {
           const split = splitDraftVersions(draft, versions)
-          setCanvasTabs(split)
-          const firstFilled = split.findIndex((tab) => tab.trim().length > 0)
+          const nextTabs = mergeDraftIntoRequestedVersions({
+            currentTabs: canvasRef.current,
+            draft,
+            split,
+            requestedVersions,
+            versions,
+          })
+          setCanvasTabs(nextTabs)
+          const firstFilled = nextTabs.findIndex((tab) => tab.trim().length > 0)
           if (firstFilled >= 0) setActiveTab(firstFilled)
         }
       }

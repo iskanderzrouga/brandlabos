@@ -272,6 +272,18 @@ function parseRequestedVersionNumbers(messageText: string, versions: number): nu
   return Array.from(set).sort((a, b) => a - b)
 }
 
+function sanitizePreferredVersions(input: unknown, versions: number): number[] {
+  if (!Array.isArray(input) || versions <= 1) return []
+  const set = new Set<number>()
+  for (const raw of input) {
+    const value = Number(raw)
+    if (Number.isFinite(value) && value >= 1 && value <= versions) {
+      set.add(Math.floor(value))
+    }
+  }
+  return Array.from(set).sort((a, b) => a - b)
+}
+
 function getVersionHeadingNumbers(text: string): Set<number> {
   const numbers = new Set<number>()
   const regex = /^##\s*Version\s*(\d+)\b.*$/gim
@@ -373,6 +385,7 @@ function ensureDraftEnvelope(args: {
   assistantText: string
   userMessage: string
   versions: number
+  preferredVersions?: number[]
 }): {
   text: string
   coerced: boolean
@@ -380,22 +393,27 @@ function ensureDraftEnvelope(args: {
   version_headings: number
   requested_versions: number[]
 } {
-  const { assistantText, userMessage, versions } = args
+  const { assistantText, userMessage, versions, preferredVersions = [] } = args
   const trimmed = assistantText.trim()
-  const requestedVersions = parseRequestedVersionNumbers(userMessage, versions)
+  const explicitRequestedVersions = parseRequestedVersionNumbers(userMessage, versions)
   if (!trimmed) {
     return {
       text: assistantText,
       coerced: false,
       distributed: false,
       version_headings: 0,
-      requested_versions: requestedVersions,
+      requested_versions: explicitRequestedVersions,
     }
   }
 
   const existingDraftBody = extractDraftBody(trimmed)
   let distributed = false
   const allVersionsRequested = userRequestedAllVersions(userMessage, versions)
+  const requestedVersions = allVersionsRequested
+    ? []
+    : explicitRequestedVersions.length > 0
+      ? explicitRequestedVersions
+      : sanitizePreferredVersions(preferredVersions, versions)
   if (existingDraftBody) {
     let body = normalizeLooseDraftBody(existingDraftBody)
     if (!allVersionsRequested && requestedVersions.length > 0) {
@@ -747,6 +765,7 @@ export async function POST(request: NextRequest) {
 
     const skill = String(threadContext.skill || 'ugc_video_scripts')
     const versions = Math.min(6, Math.max(1, Number(threadContext.versions || 1)))
+    const preferredVersions = sanitizePreferredVersions(body.target_versions, versions)
 
     const avatarIds = Array.isArray(threadContext.avatar_ids) ? threadContext.avatar_ids : []
     const avatars: Array<{ id: string; name: string; content: string }> = []
@@ -1119,6 +1138,7 @@ export async function POST(request: NextRequest) {
         assistantText,
         userMessage: messageText,
         versions,
+        preferredVersions,
       })
       assistantText = draftEnvelope.text
 

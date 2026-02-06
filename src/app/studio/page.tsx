@@ -1857,13 +1857,20 @@ export default function GeneratePage() {
       .join('\n\n')
 
     const requestLooksLikeDraft = isWritingIntentMessage(fullMessage)
-    const requestedVersions = requestLooksLikeDraft
+    const explicitRequestedVersions = requestLooksLikeDraft
       ? parseRequestedVersionNumbers(fullMessage, versions)
       : []
+    const asksAllVersions = requestLooksLikeDraft && isAllVersionsRequest(fullMessage, versions)
+    const autoTargetVersions =
+      requestLooksLikeDraft && versions > 1 && explicitRequestedVersions.length === 0 && !asksAllVersions
+        ? [activeTab + 1]
+        : []
+    const requestedVersions =
+      explicitRequestedVersions.length > 0 ? explicitRequestedVersions : autoTargetVersions
     const targetSpecificVersions =
       requestedVersions.length > 0 &&
       requestedVersions.length < versions &&
-      !isAllVersionsRequest(fullMessage, versions)
+      !asksAllVersions
     const canvasEmptyAtSend = canvasRef.current.every((t) => !t.trim())
     const streamDraftToCanvas =
       requestLooksLikeDraft && (canvasEmptyAtSend || hasQueuedNotes || targetSpecificVersions)
@@ -1927,7 +1934,11 @@ export default function GeneratePage() {
           headers: requestHeaders,
           cache: 'no-store',
           signal: attemptAbort.signal,
-          body: JSON.stringify({ thread_id: threadId, message: fullMessage }),
+          body: JSON.stringify({
+            thread_id: threadId,
+            message: fullMessage,
+            target_versions: requestedVersions,
+          }),
         })
 
         const headerRequestId = res.headers.get('x-request-id') || null

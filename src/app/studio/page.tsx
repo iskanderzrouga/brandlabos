@@ -461,7 +461,7 @@ async function readAgentStreamEvents(
   const flushChunk = (chunk: string) => {
     const lines = chunk.split('\n')
     const dataLines = lines
-      .map((line) => line.trimEnd())
+      .map((line) => line.trim())
       .filter((line) => line.startsWith('data:'))
       .map((line) => line.slice(5).trimStart())
 
@@ -483,12 +483,21 @@ async function readAgentStreamEvents(
     if (done) break
     buffer += decoder.decode(value, { stream: true })
 
-    let separatorIndex = buffer.indexOf('\n\n')
-    while (separatorIndex >= 0) {
-      const chunk = buffer.slice(0, separatorIndex)
-      buffer = buffer.slice(separatorIndex + 2)
+    const getNextSeparator = (input: string) => {
+      const lf = input.indexOf('\n\n')
+      const crlf = input.indexOf('\r\n\r\n')
+      if (lf === -1 && crlf === -1) return null
+      if (lf === -1) return { index: crlf, length: 4 }
+      if (crlf === -1) return { index: lf, length: 2 }
+      return lf < crlf ? { index: lf, length: 2 } : { index: crlf, length: 4 }
+    }
+
+    let separator = getNextSeparator(buffer)
+    while (separator) {
+      const chunk = buffer.slice(0, separator.index)
+      buffer = buffer.slice(separator.index + separator.length)
       flushChunk(chunk)
-      separatorIndex = buffer.indexOf('\n\n')
+      separator = getNextSeparator(buffer)
     }
   }
 
@@ -551,6 +560,7 @@ export default function GeneratePage() {
   const [canvasTabs, setCanvasTabs] = useState<string[]>([''])
   const canvasRef = useRef<string[]>([''])
   const canvasTextareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const chatAbortRef = useRef<AbortController | null>(null)
   const pendingAutoApplyRef = useRef(false)
   const suppressSelectionRef = useRef(false)
   const historyRef = useRef<Record<number, { entries: string[]; index: number }>>({})
@@ -1663,8 +1673,12 @@ export default function GeneratePage() {
       let data: AgentChatJsonResponse | null = null
       let lastStatus: number | null = null
       let lastError: string | null = null
+      let fallbackAssistantMessage = ''
+      let hadPartialStreamError = false
 
       for (let attempt = 0; attempt < 2; attempt += 1) {
+        const attemptAbort = new AbortController()
+        chatAbortRef.current = attemptAbort
         const attemptMode: 'stream' | 'json' = attempt === 0 ? 'stream' : 'json'
         const endpoint = attemptMode === 'json' ? '/api/agent/chat?mode=json' : '/api/agent/chat'
         const requestHeaders: Record<string, string> = { 'Content-Type': 'application/json' }
@@ -1676,6 +1690,7 @@ export default function GeneratePage() {
           method: 'POST',
           headers: requestHeaders,
           cache: 'no-store',
+          signal: attemptAbort.signal,
           body: JSON.stringify({ thread_id: threadId, message: fullMessage }),
         })
 
@@ -1733,6 +1748,7 @@ export default function GeneratePage() {
                 if (!delta) return
                 sawFirstDelta = true
                 streamedText += delta
+                fallbackAssistantMessage = streamedText
                 setMessages((prev) =>
                   prev.map((message) =>
                     message.id === pendingAssistantId
@@ -1747,6 +1763,7 @@ export default function GeneratePage() {
                 streamFinal = event
                 const finalText =
                   typeof event.assistant_message === 'string' ? event.assistant_message : streamedText
+                fallbackAssistantMessage = finalText
                 setMessages((prev) =>
                   prev.map((message) =>
                     message.id === pendingAssistantId
@@ -1774,6 +1791,17 @@ export default function GeneratePage() {
             })
 
             if (streamError) {
+              if (streamedText.trim()) {
+                hadPartialStreamError = true
+                const streamFinalPayload = streamFinal as AgentChatFinalEvent | null
+                data = {
+                  assistant_message: streamedText,
+                  thread_context: streamFinalPayload?.thread_context,
+                  request_id: streamFinalPayload?.request_id || headerRequestId || undefined,
+                  runtime: streamFinalPayload?.runtime,
+                }
+                break
+              }
               if (attempt === 0 && !sawFirstDelta) {
                 await sleep(350)
                 continue
@@ -1783,16 +1811,30 @@ export default function GeneratePage() {
 
             const finalPayload = (streamFinal || {}) as Partial<AgentChatFinalEvent>
             data = {
-              assistant_message: finalPayload.assistant_message,
+              assistant_message:
+                typeof finalPayload.assistant_message === 'string'
+                  ? finalPayload.assistant_message
+                  : streamedText,
               thread_context: finalPayload.thread_context,
               request_id: finalPayload.request_id || headerRequestId || undefined,
               runtime: finalPayload.runtime,
             }
           } else {
             data = await readJsonFromResponse<AgentChatJsonResponse>(res)
+            if (data?.assistant_message) {
+              fallbackAssistantMessage = data.assistant_message
+            }
           }
 
-          if (!data?.assistant_message) {
+          const parsedAssistantMessage = String(data?.assistant_message || '').trim()
+          if (!parsedAssistantMessage) {
+            if (fallbackAssistantMessage.trim()) {
+              data = {
+                ...(data || {}),
+                assistant_message: fallbackAssistantMessage,
+              }
+              break
+            }
             if (attempt === 0 && !sawFirstDelta) {
               await sleep(350)
               continue
@@ -1822,6 +1864,12 @@ export default function GeneratePage() {
 
       if (lastStatus == null || lastStatus >= 400) {
         throw new Error(lastError || 'Agent chat failed.')
+      }
+      if (!data?.assistant_message && fallbackAssistantMessage.trim()) {
+        data = {
+          ...(data || {}),
+          assistant_message: fallbackAssistantMessage,
+        }
       }
       if (!data?.assistant_message) {
         throw new Error('Agent returned an invalid response format.')
@@ -1858,8 +1906,19 @@ export default function GeneratePage() {
           insertDraftIntoCanvas(draft, 'replace')
         }
       }
+      if (hadPartialStreamError) {
+        setFeedback({
+          tone: 'info',
+          message: 'Agent stopped early, but we kept the partial answer.',
+        })
+      }
       queueMicrotask(() => scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }))
     } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        setFeedback({ tone: 'info', message: 'Generation stopped.' })
+        setMessages((prev) => prev.filter((message) => message.id !== pendingAssistantId || Boolean(message.content.trim())))
+        return
+      }
       const msg = err instanceof Error ? err.message : 'Failed to send'
       setFeedback({ tone: 'error', message: msg })
       setMessages((prev) => {
@@ -1867,10 +1926,17 @@ export default function GeneratePage() {
         return [...withoutPending, { role: 'tool', content: msg }]
       })
     } finally {
+      chatAbortRef.current = null
       pendingAutoApplyRef.current = false
       setPendingAutoApply(false)
       setSending(false)
     }
+  }
+
+  function stopMessage() {
+    const controller = chatAbortRef.current
+    if (!controller) return
+    controller.abort()
   }
 
   async function handleNewAsset() {
@@ -2541,19 +2607,31 @@ export default function GeneratePage() {
                         />
                       </svg>
                     </button>
-                    <button
-                      type="submit"
-                      className="editor-icon-button"
-                      disabled={!threadId || sending || (!composer.trim() && !hasQueuedNotes)}
-                      aria-label={pendingAutoApply ? 'Send queued edits' : 'Send message'}
-                    >
-                      <svg viewBox="0 0 24 24" aria-hidden="true">
-                        <path
-                          d="M12 4l6 6-1.4 1.4-3.6-3.6V20h-2V7.8L7.4 11.4 6 10l6-6z"
-                          fill="currentColor"
-                        />
-                      </svg>
-                    </button>
+                    <div className="flex items-center gap-2">
+                      {sending && (
+                        <button
+                          type="button"
+                          onClick={stopMessage}
+                          className="editor-button-ghost text-xs"
+                          aria-label="Stop generation"
+                        >
+                          Stop
+                        </button>
+                      )}
+                      <button
+                        type="submit"
+                        className="editor-icon-button"
+                        disabled={!threadId || sending || (!composer.trim() && !hasQueuedNotes)}
+                        aria-label={pendingAutoApply ? 'Send queued edits' : 'Send message'}
+                      >
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                          <path
+                            d="M12 4l6 6-1.4 1.4-3.6-3.6V20h-2V7.8L7.4 11.4 6 10l6-6z"
+                            fill="currentColor"
+                          />
+                        </svg>
+                      </button>
+                    </div>
                   </div>
                 </form>
               </div>

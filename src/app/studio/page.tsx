@@ -578,7 +578,6 @@ export default function GeneratePage() {
   const [swipes, setSwipes] = useState<SwipeRow[]>([])
   const [activeSwipe, setActiveSwipe] = useState<SwipeRow | null>(null)
   const [researchItems, setResearchItems] = useState<ResearchItemRow[]>([])
-  const [draftVisibility, setDraftVisibility] = useState<Record<string, boolean>>({})
   const [selectionText, setSelectionText] = useState('')
   const [selectionNote, setSelectionNote] = useState('')
   const [selectionQueue, setSelectionQueue] = useState<Array<{ id: string; text: string; note: string }>>([])
@@ -744,7 +743,6 @@ export default function GeneratePage() {
     setThreadContext({})
     setCanvasTabs([''])
     setActiveTab(0)
-    setDraftVisibility({})
     setDraftSavedAt(null)
     historyRef.current = {}
 
@@ -1579,7 +1577,6 @@ export default function GeneratePage() {
     pendingAutoApplyRef.current = false
     setHighlightState(null)
     setFlashActive(false)
-    setDraftVisibility({})
     setPromptPreviewOpen(false)
     setPromptPreview(null)
     setConversationOpen(false)
@@ -2442,7 +2439,6 @@ export default function GeneratePage() {
                     const messageKey = m.id || `${idx}`
                     const draftParts = m.role === 'assistant' ? splitDraftMessage(m.content) : { before: m.content, draft: null, after: '' }
                     const draft = draftParts.draft
-                    const showDraft = Boolean(draft) && Boolean(draftVisibility[messageKey])
 
                     return (
                       <div key={messageKey} className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
@@ -2463,28 +2459,9 @@ export default function GeneratePage() {
 
                           {draft && (
                             <div className="mt-3 rounded-2xl bg-[var(--editor-panel-muted)] p-3">
-                              <div className="flex items-center justify-between gap-2">
-                                <div className="text-[11px] font-semibold text-[var(--editor-ink)]">
-                                  Draft captured
-                                </div>
-                                <button
-                                  onClick={() =>
-                                    setDraftVisibility((prev) => ({
-                                      ...prev,
-                                      [messageKey]: !prev[messageKey],
-                                    }))
-                                  }
-                                  className="text-[11px] text-[var(--editor-ink-muted)] underline underline-offset-4"
-                                >
-                                  {showDraft ? 'Hide' : 'View'}
-                                </button>
+                              <div className="text-[11px] font-semibold text-[var(--editor-ink)]">
+                                Draft ready for canvas
                               </div>
-
-                              {showDraft && (
-                                <div className="editor-message mt-2">
-                                  {renderMarkdownBlocks(draft)}
-                                </div>
-                              )}
 
                               <div className="mt-3 flex items-center gap-2">
                                 <button

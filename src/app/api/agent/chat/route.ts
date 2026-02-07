@@ -814,7 +814,10 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const skill = String(threadContext.skill || 'ugc_video_scripts')
+    const skills = Array.isArray(threadContext.skills) && threadContext.skills.length > 0
+      ? threadContext.skills.map(String)
+      : null
+    const skill = String(threadContext.skill || (skills ? skills[0] : 'ugc_video_scripts'))
     const versions = Math.min(6, Math.max(1, Number(threadContext.versions || 1)))
     const preferredVersions = sanitizePreferredVersions(body.target_versions, versions)
 
@@ -879,6 +882,7 @@ export async function POST(request: NextRequest) {
     const blocks = await loadGlobalPromptBlocks(user.id)
     const systemBuild = buildSystemPrompt({
       skill,
+      skills: skills || undefined,
       versions,
       preferredVersions,
       product: {

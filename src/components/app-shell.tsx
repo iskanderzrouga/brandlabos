@@ -427,24 +427,26 @@ export function AppShell({ children }: { children: ReactNode }) {
                 </select>
               </div>
 
-              <div>
-                <label className="block text-xs uppercase tracking-[0.22em] text-[var(--editor-ink-muted)] mb-2">
-                  Product
-                </label>
-                <select
-                  value={selectedProduct || ''}
-                  onChange={(e) => setSelectedProduct(e.target.value || null)}
-                  className="editor-input w-full text-sm"
-                  disabled={products.length === 0}
-                >
-                  {products.length === 0 && <option value="">No products</option>}
-                  {products.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              {pathname !== '/studio/settings/products' && (
+                <div>
+                  <label className="block text-xs uppercase tracking-[0.22em] text-[var(--editor-ink-muted)] mb-2">
+                    Product
+                  </label>
+                  <select
+                    value={selectedProduct || ''}
+                    onChange={(e) => setSelectedProduct(e.target.value || null)}
+                    className="editor-input w-full text-sm"
+                    disabled={products.length === 0}
+                  >
+                    {products.length === 0 && <option value="">No products</option>}
+                    {products.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
               {contextDrawerExtra && (
                 <div className="pt-6 mt-6 border-t border-[var(--editor-border)]">

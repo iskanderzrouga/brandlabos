@@ -3,6 +3,7 @@ import { DEFAULT_PROMPT_BLOCKS } from '@/lib/prompt-defaults'
 
 export type ThreadContext = {
   skill?: string
+  skills?: string[]
   versions?: number
   avatar_ids?: string[]
   positioning_id?: string | null
@@ -193,6 +194,7 @@ export async function loadGlobalPromptBlocks(userId?: string): Promise<Map<strin
 
 export function buildSystemPrompt(args: {
   skill: string
+  skills?: string[]
   versions: number
   preferredVersions?: number[]
   product: { name: string; content: string; brandName?: string | null; brandVoice?: string | null }
@@ -209,16 +211,18 @@ export function buildSystemPrompt(args: {
   research?: Array<{ id: string; title?: string | null; summary?: string | null; content?: string | null }>
   blocks: Map<string, PromptBlockRow>
 }): BuiltSystemPrompt {
-  const { skill, versions, preferredVersions, product, avatars, positioning, swipe, blocks } = args
+  const { skill, skills, versions, preferredVersions, product, avatars, positioning, swipe, blocks } = args
+
+  // Resolve all selected skills (multi-skill support, fallback to single skill)
+  const activeSkills = skills && skills.length > 0 ? skills : [skill]
 
   const agentSystemSource = resolvePromptBlock(blocks, 'agent_system')
-  const skillSource = resolvePromptBlock(blocks, skill)
+  const skillSources = activeSkills.map((s) => resolvePromptBlock(blocks, s))
   const writingRulesSource = resolvePromptBlock(blocks, 'writing_rules')
 
   const agentSystem = agentSystemSource.content.replace(/{{\s*versions\s*}}/gi, () =>
     String(versions)
   )
-  const skillGuidance = skillSource.content
   const writingRules = writingRulesSource.content
   const outputContract = `## OUTPUT CONTRACT
 
@@ -251,8 +255,10 @@ export function buildSystemPrompt(args: {
   }
 
   pushSection('agent_system', agentSystem)
-  pushSection('current_skill', `## CURRENT SKILL\n${skill}`)
-  if (skillGuidance) pushSection('skill_guidance', `## SKILL GUIDANCE\n${skillGuidance}`)
+  pushSection('current_skill', `## CURRENT SKILL${activeSkills.length > 1 ? 'S' : ''}\n${activeSkills.join(', ')}`)
+  for (const src of skillSources) {
+    if (src.content) pushSection(`skill_guidance_${src.key}`, `## SKILL GUIDANCE: ${src.key}\n${src.content}`)
+  }
   if (writingRules) pushSection('writing_rules', `## WRITING RULES\n${writingRules}`)
 
   // Inject custom rules (type=global_rules, excluding writing_rules)
@@ -322,7 +328,7 @@ export function buildSystemPrompt(args: {
 
   return {
     prompt: sections.join('\n\n---\n\n'),
-    promptBlocks: [agentSystemSource, skillSource, writingRulesSource],
+    promptBlocks: [agentSystemSource, ...skillSources, writingRulesSource],
     sections: sectionDebug,
   }
 }

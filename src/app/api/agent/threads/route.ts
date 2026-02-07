@@ -4,6 +4,7 @@ import { requireAuth } from '@/lib/require-auth'
 
 const DEFAULT_THREAD_CONTEXT = {
   skill: 'ugc_video_scripts',
+  skills: ['ugc_video_scripts'],
   versions: 1,
   avatar_ids: [],
   positioning_id: null,

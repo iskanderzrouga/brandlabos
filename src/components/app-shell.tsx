@@ -55,7 +55,11 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true)
   const [user, setUser] = useState<AuthUser | null>(null)
 
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(true)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    if (typeof window === 'undefined') return false
+    const saved = localStorage.getItem('sidebar_collapsed')
+    return saved === null ? false : saved === '1'
+  })
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [contextDrawerOpen, setContextDrawerOpen] = useState(false)
   const [contextDrawerExtra, setContextDrawerExtra] = useState<ReactNode | null>(null)
@@ -214,7 +218,11 @@ export function AppShell({ children }: { children: ReactNode }) {
 
             <button
               onClick={() => {
-                setSidebarCollapsed((v) => !v)
+                setSidebarCollapsed((v) => {
+                  const next = !v
+                  localStorage.setItem('sidebar_collapsed', next ? '1' : '0')
+                  return next
+                })
                 if (!sidebarCollapsed) setSettingsOpen(false)
               }}
               className="w-9 h-9 grid place-items-center rounded-xl hover:bg-white/10 transition-colors"

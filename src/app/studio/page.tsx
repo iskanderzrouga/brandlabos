@@ -129,6 +129,12 @@ function extractDraftBlock(text: string): string | null {
   return match[1].trim()
 }
 
+function isVersionMarkerLine(line: string): boolean {
+  return /^\s*(?:[-*+]\s*|\d+[.)]\s*)?(?:\*{1,3}\s*)?(?:#{0,4}\s*)?(?:version|ver|v|variation|variant|option)\s*[1-9]\d*\b/i.test(
+    line
+  )
+}
+
 function normalizeVersionHeadingLine(line: string): string {
   const match = line.match(
     /^\s*(?:[-*+]\s*|\d+[.)]\s*)?(?:\*{1,3}\s*)?(?:#{0,4}\s*)?(?:version|ver|v|variation|variant|option)\s*([1-9]\d*)\s*(?:[-:–—.)]\s*(.+))?\s*(?:\*{1,3})?\s*$/i
@@ -166,7 +172,7 @@ function isStructuredDraftLine(line: string): boolean {
   if (!text) return false
   return (
     /^##\s*Version\s*\d+/i.test(text) ||
-    /^(?:#{0,4}\s*)?(?:version|v)\s*\d+\b/i.test(text) ||
+    isVersionMarkerLine(text) ||
     /^#{1,4}\s+\S+/.test(text) ||
     /^([-*]|\d+[.)])\s+/.test(text)
   )
@@ -202,16 +208,18 @@ function normalizeLooseDraftBody(raw: string) {
 
 function looksLikeDraftPayload(text: string) {
   const trimmed = text.trim()
-  if (!trimmed || trimmed.length < 140) return false
+  if (!trimmed) return false
   const lines = trimmed
     .split('\n')
     .map((line) => line.trim())
     .filter(Boolean)
-  const hasVersionHeading = lines.some((line) => /^#{1,4}\s*version\s*\d+/i.test(line))
-  const hasVersionMarker = lines.some((line) => /^(?:#{0,4}\s*)?(?:version|v)\s*\d+\b/i.test(line))
+  const hasVersionHeading = lines.some((line) => /^##\s*version\s*\d+\b/i.test(line))
+  const hasVersionMarker = lines.some((line) => isVersionMarkerLine(line))
   const hasList = lines.some((line) => /^([-*]|\d+[.)])\s+/.test(line))
   const hasHeading = lines.some((line) => /^#{1,4}\s+\S+/.test(line))
-  return hasVersionHeading || hasVersionMarker || (lines.length >= 6 && (hasList || hasHeading))
+  if (hasVersionHeading || hasVersionMarker) return true
+  if (trimmed.length < 80) return false
+  return lines.length >= 4 && (hasList || hasHeading)
 }
 
 function parseRequestedVersionNumbers(messageText: string, versions: number): number[] {

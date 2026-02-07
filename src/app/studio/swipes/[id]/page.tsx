@@ -41,7 +41,7 @@ export default function SwipeDetailPage() {
   const [loading, setLoading] = useState(true)
   const [swipe, setSwipe] = useState<SwipeRow | null>(null)
   const [videoUrl, setVideoUrl] = useState<string | null>(null)
-  const [showTranscript, setShowTranscript] = useState(false)
+  const [showTranscript, setShowTranscript] = useState(true)
   const [feedback, setFeedback] = useState<{ tone: 'info' | 'success' | 'error'; message: string } | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -314,9 +314,6 @@ export default function SwipeDetailPage() {
             <div>
               <p className="text-[10px] uppercase tracking-[0.28em] text-[var(--editor-ink-muted)]">
                 Transcript
-              </p>
-              <p className="text-xs text-[var(--editor-ink-muted)] mt-1">
-                Hidden by default so you can skim the swipe first.
               </p>
             </div>
             <button onClick={() => setShowTranscript((v) => !v)} className="editor-button-ghost text-xs">

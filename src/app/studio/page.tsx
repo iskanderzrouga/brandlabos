@@ -1927,6 +1927,7 @@ export default function GeneratePage() {
       let hadPartialStreamError = false
       let canvasUpdatedFromStream = false
       let draftAppliedToCanvas = false
+      let tabAutoSwitchedDuringStream = false
 
       for (let attempt = 0; attempt < 2; attempt += 1) {
         const attemptAbort = new AbortController()
@@ -2031,11 +2032,15 @@ export default function GeneratePage() {
                       canvasUpdatedFromStream = true
                       draftAppliedToCanvas = true
                     }
-                    if (requestedVersions.length === 1) {
-                      setActiveTab(Math.max(0, requestedVersions[0] - 1))
-                    } else {
-                      const firstFilled = nextTabs.findIndex((tab) => tab.trim().length > 0)
-                      if (firstFilled >= 0) setActiveTab(firstFilled)
+                    // Only auto-switch tab once at the start of streaming, not on every delta
+                    if (!tabAutoSwitchedDuringStream) {
+                      if (requestedVersions.length === 1) {
+                        setActiveTab(Math.max(0, requestedVersions[0] - 1))
+                      } else {
+                        const firstFilled = nextTabs.findIndex((tab) => tab.trim().length > 0)
+                        if (firstFilled >= 0) setActiveTab(firstFilled)
+                      }
+                      tabAutoSwitchedDuringStream = true
                     }
                   }
                 } else {

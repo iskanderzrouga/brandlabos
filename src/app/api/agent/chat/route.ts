@@ -250,8 +250,16 @@ function looksLikeDraftPayload(text: string): boolean {
     .map((line) => line.trim())
     .filter(Boolean)
 
+  // Explicit version markers are strong signals
   const hasVersionHeading = lines.some((line) => /^##\s*version\s*\d+\b/i.test(line))
   const hasVersionMarker = lines.some((line) => isVersionMarkerLine(line))
+
+  // Questions are clearly not drafts
+  const looksLikeQuestion = /\?$/.test(trimmed) || /^(what|how|why|when|where|who|can|should|would|could|do you|does|is|are)\b/i.test(trimmed)
+
+  // Conversational starters/enders
+  const looksConversational = /^(sure|okay|alright|yes|no|hey|hi|hello|thanks|got it)\b/i.test(trimmed)
+
   const hasList = lines.some((line) => /^([-*]|\d+[.)])\s+/.test(line))
   const hasHeading = lines.some((line) => /^#{1,4}\s+\S+/.test(line))
   const hasPromptLikeLanguage =
@@ -259,8 +267,15 @@ function looksLikeDraftPayload(text: string): boolean {
 
   if (hasVersionHeading || hasVersionMarker) return true
   if (hasPromptLikeLanguage) return true
-  if (trimmed.length < 80) return false
-  return lines.length >= 4 && (hasList || hasHeading)
+
+  // Exclude questions and conversational responses
+  if (looksLikeQuestion || looksConversational) return false
+
+  // Require much longer content (300+ chars) for generic structured text
+  if (trimmed.length < 300) return false
+
+  // Only treat as draft if substantial structured content
+  return lines.length >= 6 && (hasList || hasHeading)
 }
 
 function userRequestedAllVersions(messageText: string, versions: number): boolean {

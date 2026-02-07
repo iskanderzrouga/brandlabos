@@ -213,13 +213,25 @@ function looksLikeDraftPayload(text: string) {
     .split('\n')
     .map((line) => line.trim())
     .filter(Boolean)
+
+  // Explicit version markers are strong signals
   const hasVersionHeading = lines.some((line) => /^##\s*version\s*\d+\b/i.test(line))
   const hasVersionMarker = lines.some((line) => isVersionMarkerLine(line))
+
+  // Questions and conversational responses are not drafts
+  const looksLikeQuestion = /\?$/.test(trimmed) || /^(what|how|why|when|where|who|can|should|would|could|do you|does|is|are)\b/i.test(trimmed)
+  const looksConversational = /^(sure|okay|alright|yes|no|hey|hi|hello|thanks|got it)\b/i.test(trimmed)
+
   const hasList = lines.some((line) => /^([-*]|\d+[.)])\s+/.test(line))
   const hasHeading = lines.some((line) => /^#{1,4}\s+\S+/.test(line))
+  const hasPromptLikeLanguage =
+    /image prompt|prompt ideas|version 1|hook|angle|script/i.test(trimmed) && lines.length >= 4
+
   if (hasVersionHeading || hasVersionMarker) return true
-  if (trimmed.length < 80) return false
-  return lines.length >= 4 && (hasList || hasHeading)
+  if (hasPromptLikeLanguage) return true
+  if (looksLikeQuestion || looksConversational) return false
+  if (trimmed.length < 300) return false
+  return lines.length >= 6 && (hasList || hasHeading)
 }
 
 function parseRequestedVersionNumbers(messageText: string, versions: number): number[] {
@@ -264,9 +276,10 @@ function isAllVersionsRequest(messageText: string, versions: number): boolean {
 function extractLiveDraftBody(text: string, userMessage: string): string | null {
   const trimmed = text.trim()
   if (!trimmed) return null
+  // Only extract draft blocks when user actually asked for writing
+  if (!isWritingIntentMessage(userMessage)) return null
   const draft = extractDraftBlock(trimmed)
   if (draft) return normalizeLooseDraftBody(draft)
-  if (!isWritingIntentMessage(userMessage)) return null
   if (!looksLikeDraftPayload(trimmed)) return null
   return normalizeLooseDraftBody(trimmed)
 }
@@ -292,13 +305,15 @@ function coerceAssistantDraftEnvelope(text: string, userMessage: string, version
   const trimmed = text.trim()
   if (!trimmed) return text
 
+  // Gate ALL draft coercion on writing intent - even if AI generated ```draft on its own
+  if (!isWritingIntentMessage(userMessage)) return text
+
   const existingDraft = extractDraftBlock(trimmed)
   let body: string
 
   if (existingDraft) {
     body = normalizeLooseDraftBody(existingDraft)
   } else {
-    if (!isWritingIntentMessage(userMessage)) return text
     if (!looksLikeDraftPayload(trimmed)) return text
     body = normalizeLooseDraftBody(trimmed)
   }
@@ -1864,14 +1879,24 @@ export default function GeneratePage() {
       .filter(Boolean)
       .join('\n\n')
 
-    const requestLooksLikeDraft = isWritingIntentMessage(fullMessage)
+    // Queued text-selection edits are always writing intent
+    const requestLooksLikeDraft = isWritingIntentMessage(fullMessage) || hasQueuedNotes
     const explicitRequestedVersions = requestLooksLikeDraft
       ? parseRequestedVersionNumbers(fullMessage, versions)
       : []
     const asksAllVersions = requestLooksLikeDraft && isAllVersionsRequest(fullMessage, versions)
+    const canvasEmptyAtSend = canvasRef.current.every((t) => !t.trim())
+    // Smart auto-targeting:
+    // - versions === 1 → always target [1]
+    // - versions > 1 AND canvas empty → target [] (all versions for new content)
+    // - versions > 1 AND canvas has content → target active tab (editing existing)
     const autoTargetVersions =
-      requestLooksLikeDraft && versions === 1 && explicitRequestedVersions.length === 0 && !asksAllVersions
-        ? [1]
+      requestLooksLikeDraft && explicitRequestedVersions.length === 0 && !asksAllVersions
+        ? versions === 1
+          ? [1]
+          : canvasEmptyAtSend
+            ? []
+            : [activeTab + 1]
         : []
     const requestedVersions =
       explicitRequestedVersions.length > 0 ? explicitRequestedVersions : autoTargetVersions
@@ -1879,7 +1904,6 @@ export default function GeneratePage() {
       requestedVersions.length > 0 &&
       requestedVersions.length < versions &&
       !asksAllVersions
-    const canvasEmptyAtSend = canvasRef.current.every((t) => !t.trim())
     const streamDraftToCanvas = requestLooksLikeDraft
     const pendingAssistantId = `assistant-pending-${Date.now()}`
 

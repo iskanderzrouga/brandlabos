@@ -217,7 +217,8 @@ function isWritingIntent(messageText: string): boolean {
     ) ||
     text.includes('for this script') ||
     text.includes('for thisscripts') ||
-    text.includes('write just 1 draft')
+    text.includes('write just 1 draft') ||
+    text.includes('edit notes based on selected text')
   )
 }
 
@@ -459,6 +460,20 @@ function ensureDraftEnvelope(args: {
     : explicitRequestedVersions.length > 0
       ? explicitRequestedVersions
       : sanitizePreferredVersions(preferredVersions, versions)
+  // Gate ALL draft processing on writing intent -- even AI-generated ```draft blocks.
+  // If user sent a conversational message ("hey listen"), strip draft wrappers.
+  if (!isWritingIntent(userMessage)) {
+    return {
+      text: existingDraftBody
+        ? trimmed.replace(/```draft\s*([\s\S]*?)\s*```/gi, '$1').trim()
+        : assistantText,
+      coerced: false,
+      distributed: false,
+      version_headings: 0,
+      requested_versions: [],
+    }
+  }
+
   if (existingDraftBody) {
     let body = normalizeLooseDraftBody(existingDraftBody)
     if (!allVersionsRequested && requestedVersions.length > 0) {
@@ -474,16 +489,6 @@ function ensureDraftEnvelope(args: {
       coerced: true,
       distributed,
       version_headings: versionHeadings,
-      requested_versions: requestedVersions,
-    }
-  }
-
-  if (!isWritingIntent(userMessage)) {
-    return {
-      text: assistantText,
-      coerced: false,
-      distributed: false,
-      version_headings: 0,
       requested_versions: requestedVersions,
     }
   }

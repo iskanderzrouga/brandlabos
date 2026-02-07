@@ -109,11 +109,9 @@ export default function SwipeDetailPage() {
 
   useEffect(() => {
     let active = true
+    const isFirstLoad = { current: true }
     const run = async () => {
-      if (!loading) {
-        // Silent refresh — don't flash loading state
-      } else {
-        setVideoUrl(null)
+      if (isFirstLoad.current) {
         setLoadError(null)
       }
       try {
@@ -124,20 +122,28 @@ export default function SwipeDetailPage() {
         setSwipe(data)
       } catch (error) {
         if (!active) return
-        if (loading) {
+        if (isFirstLoad.current) {
           setLoadError(error instanceof Error ? error.message : 'Failed to load swipe')
           setSwipe(null)
         }
       } finally {
-        if (active) setLoading(false)
+        if (active) {
+          setLoading(false)
+          isFirstLoad.current = false
+        }
       }
     }
     if (id) run()
 
-    // Auto-poll every 5s while not ready
+    // Poll every 10s only while swipe is not ready
     const interval = setInterval(() => {
-      if (active && id) run()
-    }, 5000)
+      if (!active || !id) return
+      setSwipe((prev) => {
+        if (prev && prev.status === 'ready') return prev
+        run()
+        return prev
+      })
+    }, 10000)
 
     return () => {
       active = false
@@ -147,8 +153,8 @@ export default function SwipeDetailPage() {
 
   useEffect(() => {
     let active = true
+    if (!swipe || swipe.status !== 'ready' || videoUrl) return
     const run = async () => {
-      if (!swipe || swipe.status !== 'ready') return
       try {
         const res = await fetch(`/api/swipes/${swipe.id}/video-url`)
         const data = await res.json()
@@ -162,7 +168,7 @@ export default function SwipeDetailPage() {
     return () => {
       active = false
     }
-  }, [swipe])
+  }, [swipe?.status, swipe?.id, videoUrl])
 
   if (loading) {
     return (
@@ -298,30 +304,6 @@ export default function SwipeDetailPage() {
         )}
 
         <div className="editor-panel p-5">
-          <p className="text-[10px] uppercase tracking-[0.28em] text-[var(--editor-ink-muted)]">
-            Video
-          </p>
-
-          {swipe.status === 'ready' && videoUrl ? (
-            <div className="mt-3">
-              <video src={videoUrl} controls className="max-w-sm w-full rounded-2xl border border-[var(--editor-border)]" />
-            </div>
-          ) : swipe.status === 'processing' ? (
-            <p className="text-sm text-[var(--editor-ink-muted)] mt-3">
-              {stale ? 'Processing appears stuck. Use Retry to re-queue this swipe.' : 'Processing... video will appear when ready.'}
-            </p>
-          ) : swipe.status === 'failed' ? (
-            <p className="text-sm text-red-700 mt-3">
-              Failed: {swipe.job_error_message || swipe.error_message || 'Unknown error'}
-            </p>
-          ) : (
-            <p className="text-sm text-[var(--editor-ink-muted)] mt-3">
-              Video not available yet.
-            </p>
-          )}
-        </div>
-
-        <div className="editor-panel p-5">
           <div className="flex items-center justify-between">
             <div>
               <p className="text-[10px] uppercase tracking-[0.28em] text-[var(--editor-ink-muted)]">
@@ -337,6 +319,33 @@ export default function SwipeDetailPage() {
             <pre className="mt-4 whitespace-pre-wrap text-sm leading-6 text-[var(--editor-ink)] bg-[var(--editor-panel-muted)] border border-[var(--editor-border)] rounded-2xl p-4 overflow-auto">
               {swipe.transcript || '(no transcript yet)'}
             </pre>
+          )}
+        </div>
+
+        <div className="editor-panel p-5">
+          <p className="text-[10px] uppercase tracking-[0.28em] text-[var(--editor-ink-muted)]">
+            Video
+          </p>
+
+          {swipe.status === 'ready' && videoUrl ? (
+            <div className="mt-3">
+              <video src={videoUrl} controls className="max-w-xs w-full rounded-2xl border border-[var(--editor-border)]" />
+            </div>
+          ) : swipe.status === 'processing' ? (
+            <div className="flex items-center gap-2 mt-3">
+              <span className="inline-block w-3 h-3 border-2 border-[var(--editor-accent)] border-t-transparent rounded-full animate-spin" />
+              <span className="text-sm text-[var(--editor-ink-muted)]">
+                {stale ? 'Processing appears stuck. Use Retry to re-queue.' : swipe.job_status === 'running' ? 'Processing...' : 'Waiting in queue...'}
+              </span>
+            </div>
+          ) : swipe.status === 'failed' ? (
+            <p className="text-sm text-red-700 mt-3">
+              Failed: {swipe.job_error_message || swipe.error_message || 'Unknown error'}
+            </p>
+          ) : (
+            <p className="text-sm text-[var(--editor-ink-muted)] mt-3">
+              Video not available yet.
+            </p>
           )}
         </div>
       </div>

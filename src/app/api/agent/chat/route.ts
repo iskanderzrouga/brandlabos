@@ -139,7 +139,7 @@ function extractDraftBody(text: string): string | null {
 
 function normalizeVersionHeadingLine(line: string): string {
   const match = line.match(
-    /^\s*(?:\*{1,2}\s*)?(?:#{1,4}\s*)?(?:version|v)\s*([1-9]\d*)\s*(?:[-:–—]\s*(.+))?\s*(?:\*{1,2})?\s*$/i
+    /^\s*(?:[-*+]\s*|\d+[.)]\s*)?(?:\*{1,3}\s*)?(?:#{0,4}\s*)?(?:version|ver|v|variation|variant|option)\s*([1-9]\d*)\s*(?:[-:–—.)]\s*(.+))?\s*(?:\*{1,3})?\s*$/i
   )
   if (!match) return line
   const label = String(match[2] || '').trim()

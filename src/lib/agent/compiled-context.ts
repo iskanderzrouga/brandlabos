@@ -214,7 +214,9 @@ export function buildSystemPrompt(args: {
 - Writing replies: output ONLY one \`\`\`draft block and nothing before/after it.
 - Keep meta commentary outside drafts. Draft body should be final usable content only.
 - Versions rule: if all versions are requested, include headings through ## Version ${versions}.
-- If only one version is requested, output only that version heading inside the draft block.`
+- If only one version is requested, output only that version heading inside the draft block.
+- Use exact headings in this exact format only: \`## Version 1\`, \`## Version 2\`, etc.
+- Do not use alternate section labels like "Option 1", "Variation 1", or "V1".`
 
   const sections: string[] = []
   const sectionDebug: PromptSectionInfo[] = []

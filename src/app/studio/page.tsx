@@ -131,7 +131,7 @@ function extractDraftBlock(text: string): string | null {
 
 function normalizeVersionHeadingLine(line: string): string {
   const match = line.match(
-    /^\s*(?:\*{1,2}\s*)?(?:#{1,4}\s*)?(?:version|v)\s*([1-9]\d*)\s*(?:[-:–—]\s*(.+))?\s*(?:\*{1,2})?\s*$/i
+    /^\s*(?:[-*+]\s*|\d+[.)]\s*)?(?:\*{1,3}\s*)?(?:#{0,4}\s*)?(?:version|ver|v|variation|variant|option)\s*([1-9]\d*)\s*(?:[-:–—.)]\s*(.+))?\s*(?:\*{1,3})?\s*$/i
   )
   if (!match) return line
   const label = String(match[2] || '').trim()
@@ -1918,6 +1918,7 @@ export default function GeneratePage() {
       let fallbackAssistantMessage = ''
       let hadPartialStreamError = false
       let canvasUpdatedFromStream = false
+      let draftAppliedToCanvas = false
 
       for (let attempt = 0; attempt < 2; attempt += 1) {
         const attemptAbort = new AbortController()
@@ -2020,6 +2021,7 @@ export default function GeneratePage() {
                     if (!areTabsEqual(canvasRef.current, nextTabs)) {
                       setCanvasTabs(nextTabs)
                       canvasUpdatedFromStream = true
+                      draftAppliedToCanvas = true
                     }
                     if (requestedVersions.length === 1) {
                       setActiveTab(Math.max(0, requestedVersions[0] - 1))
@@ -2046,10 +2048,14 @@ export default function GeneratePage() {
                   typeof event.assistant_message === 'string' ? event.assistant_message : streamedText
                 fallbackAssistantMessage = finalText
                 if (streamDraftToCanvas) {
+                  const shouldShowCanvasStatus = draftAppliedToCanvas || canvasUpdatedFromStream
                   setMessages((prev) =>
                     prev.map((message) =>
                       message.id === pendingAssistantId
-                        ? { ...message, content: 'Draft ready in canvas.' }
+                        ? {
+                            ...message,
+                            content: shouldShowCanvasStatus ? 'Draft ready in canvas.' : finalText,
+                          }
                         : message
                     )
                   )
@@ -2195,28 +2201,11 @@ export default function GeneratePage() {
       if (data.runtime && typeof data.runtime === 'object') {
         setRuntimeCall(data.runtime)
       }
-      setMessages((prev) => {
-        let found = false
-        const next = prev.map((message) => {
-          if (message.id !== pendingAssistantId) return message
-          found = true
-          if (streamDraftToCanvas) {
-            return { ...message, content: 'Draft ready in canvas.' }
-          }
-          return { ...message, content: assistantMessage }
-        })
-        if (!found) {
-          next.push({
-            role: 'assistant',
-            content: streamDraftToCanvas ? 'Draft ready in canvas.' : assistantMessage,
-          })
-        }
-        return next
-      })
 
       if (draft) {
         if (shouldAutoApply) {
           applyDraftAuto(draft)
+          draftAppliedToCanvas = true
         } else if (canvasEmptyAtSend || streamDraftToCanvas) {
           const split = splitDraftVersions(draft, versions)
           const nextTabs = mergeDraftIntoRequestedVersions({
@@ -2227,10 +2216,30 @@ export default function GeneratePage() {
             versions,
           })
           setCanvasTabs(nextTabs)
+          draftAppliedToCanvas = true
           const firstFilled = nextTabs.findIndex((tab) => tab.trim().length > 0)
           if (firstFilled >= 0) setActiveTab(firstFilled)
         }
       }
+      const shouldShowCanvasStatus = streamDraftToCanvas && (draftAppliedToCanvas || canvasUpdatedFromStream)
+      setMessages((prev) => {
+        let found = false
+        const next = prev.map((message) => {
+          if (message.id !== pendingAssistantId) return message
+          found = true
+          if (shouldShowCanvasStatus) {
+            return { ...message, content: 'Draft ready in canvas.' }
+          }
+          return { ...message, content: assistantMessage }
+        })
+        if (!found) {
+          next.push({
+            role: 'assistant',
+            content: shouldShowCanvasStatus ? 'Draft ready in canvas.' : assistantMessage,
+          })
+        }
+        return next
+      })
       if (hadPartialStreamError) {
         setFeedback({
           tone: 'info',

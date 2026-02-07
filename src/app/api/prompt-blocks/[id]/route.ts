@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
 import { updatePromptBlockSchema } from '@/lib/validations'
+import { requireAuth } from '@/lib/require-auth'
 
 type Params = { params: Promise<{ id: string }> }
 
@@ -26,11 +27,14 @@ export async function GET(request: NextRequest, { params }: Params) {
 }
 
 // PATCH /api/prompt-blocks/[id] - Update prompt block (creates new version if content changes)
+// If user_id is provided in body and the block is global, creates a user-scoped copy instead
 export async function PATCH(request: NextRequest, { params }: Params) {
   try {
     const { id } = await params
     const body = await request.json()
     console.log('PATCH /api/prompt-blocks/' + id + ' - received body keys:', Object.keys(body))
+
+    const userId = typeof body.user_id === 'string' ? body.user_id : null
 
     const validated = updatePromptBlockSchema.safeParse(body)
 
@@ -54,6 +58,57 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       return NextResponse.json({ error: 'Prompt block not found' }, { status: 404 })
     }
 
+    // If user_id provided and block is global (no user_id), create a user-scoped copy
+    if (userId && !existing.user_id && validated.data.content) {
+      const metadataKey =
+        typeof (validated.data.metadata as { key?: string } | undefined)?.key === 'string'
+          ? (validated.data.metadata as { key?: string }).key
+          : typeof (existing.metadata as { key?: string } | undefined)?.key === 'string'
+            ? (existing.metadata as { key?: string }).key
+            : null
+
+      // Deactivate any existing user-scoped block with same key
+      if (metadataKey) {
+        await sql`
+          UPDATE prompt_blocks
+          SET is_active = false
+          WHERE scope = ${existing.scope}
+            AND COALESCE(scope_id::text, '') = COALESCE(${existing.scope_id}::text, '')
+            AND user_id = ${userId}
+            AND (metadata->>'key') = ${metadataKey}
+            AND is_active = true
+        `
+      }
+
+      // Create user-scoped copy
+      const newRows = await sql`
+        INSERT INTO prompt_blocks (
+          name,
+          type,
+          scope,
+          scope_id,
+          user_id,
+          content,
+          version,
+          is_active,
+          metadata
+        ) VALUES (
+          ${validated.data.name ?? existing.name},
+          ${existing.type},
+          ${existing.scope},
+          ${existing.scope_id},
+          ${userId},
+          ${validated.data.content},
+          1,
+          true,
+          ${validated.data.metadata ?? existing.metadata ?? {}}
+        )
+        RETURNING *
+      `
+
+      return NextResponse.json(newRows[0])
+    }
+
     // If content is changing, create a new version instead of updating
     if (validated.data.content && validated.data.content !== existing.content) {
       const metadataKey =
@@ -70,6 +125,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
             SET is_active = false
             WHERE scope = ${existing.scope}
               AND scope_id = ${existing.scope_id}
+              AND COALESCE(user_id::text, '') = COALESCE(${existing.user_id}::text, '')
               AND (metadata->>'key') = ${metadataKey}
               AND is_active = true
           `
@@ -79,6 +135,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
             SET is_active = false
             WHERE scope = ${existing.scope}
               AND scope_id IS NULL
+              AND COALESCE(user_id::text, '') = COALESCE(${existing.user_id}::text, '')
               AND (metadata->>'key') = ${metadataKey}
               AND is_active = true
           `
@@ -99,6 +156,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
           type,
           scope,
           scope_id,
+          user_id,
           content,
           version,
           is_active,
@@ -108,6 +166,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
           ${existing.type},
           ${existing.scope},
           ${existing.scope_id},
+          ${existing.user_id},
           ${validated.data.content},
           ${existing.version + 1},
           true,
@@ -141,9 +200,26 @@ export async function PATCH(request: NextRequest, { params }: Params) {
 }
 
 // DELETE /api/prompt-blocks/[id] - Delete prompt block
+// Non-super_admin can only delete their own user-scoped blocks
 export async function DELETE(request: NextRequest, { params }: Params) {
   try {
     const { id } = await params
+    const user = await requireAuth()
+
+    const existingRows = await sql`
+      SELECT id, user_id FROM prompt_blocks WHERE id = ${id} LIMIT 1
+    `
+    if (!existingRows[0]) {
+      return NextResponse.json({ error: 'Prompt block not found' }, { status: 404 })
+    }
+
+    const block = existingRows[0]
+
+    // Non-super_admin can only delete their own user-scoped blocks
+    if (user && user.role !== 'super_admin' && block.user_id !== user.id) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+    }
+
     const rows = await sql`
       DELETE FROM prompt_blocks
       WHERE id = ${id}

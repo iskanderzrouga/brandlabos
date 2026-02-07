@@ -74,6 +74,21 @@ export async function POST(request: NextRequest) {
       RETURNING *
     `
     const thread = rows[0]
+
+    // Clean up empty untitled threads (no title, no draft, no messages)
+    await sql`
+      DELETE FROM agent_threads
+      WHERE user_id = ${user.id}
+        AND product_id = ${productId}
+        AND title IS NULL
+        AND (draft_title IS NULL OR draft_title = '')
+        AND (draft_content IS NULL OR draft_content = '')
+        AND NOT EXISTS (
+          SELECT 1 FROM agent_messages WHERE thread_id = agent_threads.id
+        )
+        AND id != ${thread.id}
+    `
+
     return NextResponse.json(thread)
   } catch (error) {
     console.error('Create thread error:', error)

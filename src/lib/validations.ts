@@ -86,6 +86,7 @@ export const createPromptBlockSchema = z.object({
   type: promptBlockTypeEnum,
   scope: promptBlockScopeEnum,
   scope_id: z.string().uuid().optional().nullable(),
+  user_id: z.string().uuid().optional().nullable(),
   content: z.string().min(1, 'Content is required'),
   is_active: z.boolean().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),

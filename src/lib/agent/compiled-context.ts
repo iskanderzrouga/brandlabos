@@ -161,14 +161,24 @@ function toSection(name: string, text: string): PromptSectionInfo | null {
   return { name, length: cleaned.length }
 }
 
-export async function loadGlobalPromptBlocks(): Promise<Map<string, PromptBlockRow>> {
-  const blocks = (await sql`
-    SELECT id, type, content, metadata
-    FROM prompt_blocks
-    WHERE is_active = true
-      AND scope = 'global'
-    ORDER BY updated_at DESC NULLS LAST, version DESC, created_at DESC
-  `) as PromptBlockRow[]
+export async function loadGlobalPromptBlocks(userId?: string): Promise<Map<string, PromptBlockRow>> {
+  const blocks = userId
+    ? ((await sql`
+        SELECT id, type, content, metadata
+        FROM prompt_blocks
+        WHERE is_active = true
+          AND scope = 'global'
+          AND (user_id = ${userId} OR user_id IS NULL)
+        ORDER BY user_id DESC NULLS LAST, updated_at DESC NULLS LAST, version DESC, created_at DESC
+      `) as PromptBlockRow[])
+    : ((await sql`
+        SELECT id, type, content, metadata
+        FROM prompt_blocks
+        WHERE is_active = true
+          AND scope = 'global'
+          AND user_id IS NULL
+        ORDER BY updated_at DESC NULLS LAST, version DESC, created_at DESC
+      `) as PromptBlockRow[])
 
   const map = new Map<string, PromptBlockRow>()
   for (const block of blocks || []) {
@@ -244,6 +254,14 @@ export function buildSystemPrompt(args: {
   pushSection('current_skill', `## CURRENT SKILL\n${skill}`)
   if (skillGuidance) pushSection('skill_guidance', `## SKILL GUIDANCE\n${skillGuidance}`)
   if (writingRules) pushSection('writing_rules', `## WRITING RULES\n${writingRules}`)
+
+  // Inject custom rules (type=global_rules, excluding writing_rules)
+  for (const [key, block] of blocks.entries()) {
+    if (block.type === 'global_rules' && key !== 'writing_rules') {
+      pushSection(`rule_${key}`, `## RULE: ${key}\n${block.content}`)
+    }
+  }
+
   pushSection('output_contract', outputContract)
 
   // Version targeting context

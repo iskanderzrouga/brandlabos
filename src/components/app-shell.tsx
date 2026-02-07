@@ -146,7 +146,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const navItems = [
     { label: 'Agent', href: '/studio', icon: <SparkIcon /> },
     { label: 'Avatars', href: '/studio/avatars', icon: <AvatarIcon /> },
-    { label: 'Agents', href: '/studio/agents', icon: <AgentsIcon /> },
+    { label: 'Agents', href: '/studio/agents', icon: <AgentsIcon />, adminOnly: true },
     { label: 'Positioning', href: '/studio/pitches', icon: <TargetIcon /> },
     { label: 'Research', href: '/studio/research', icon: <SearchIcon /> },
     { label: 'Swipes', href: '/studio/swipes', icon: <FilmIcon /> },
@@ -159,8 +159,12 @@ export function AppShell({ children }: { children: ReactNode }) {
     { label: 'Brands', href: '/studio/settings/brands', icon: <TagIcon /> },
     { label: 'Products', href: '/studio/settings/products', icon: <BoxIcon /> },
     { label: 'API Keys', href: '/studio/settings/api-keys', icon: <KeyIcon /> },
-    { label: 'Users', href: '/admin/users', icon: <UsersIcon /> },
+    { label: 'Users', href: '/admin/users', icon: <UsersIcon />, adminOnly: true },
   ]
+
+  const isSuperAdmin = user?.role === 'super_admin'
+  const filteredNav = navItems.filter(item => !item.adminOnly || isSuperAdmin)
+  const filteredSettings = settingsItems.filter(item => !item.adminOnly || isSuperAdmin)
 
   const isNavActive = (href: string) => {
     if (href === '/studio') return pathname === '/studio'
@@ -229,7 +233,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               </p>
             )}
             <div className="space-y-1">
-              {navItems.map((item) => {
+              {filteredNav.map((item) => {
                 const active = isNavActive(item.href)
                 return (
                   <Link
@@ -277,7 +281,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
               {settingsOpen && !sidebarCollapsed && (
                 <div className="mt-2 space-y-1">
-                  {settingsItems.map((item) => {
+                  {filteredSettings.map((item) => {
                     const active = isNavActive(item.href)
                     return (
                       <Link

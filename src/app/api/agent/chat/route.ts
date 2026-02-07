@@ -876,7 +876,7 @@ export async function POST(request: NextRequest) {
 
     const promptCompileStartedAt = Date.now()
 
-    const blocks = await loadGlobalPromptBlocks()
+    const blocks = await loadGlobalPromptBlocks(user.id)
     const systemBuild = buildSystemPrompt({
       skill,
       versions,

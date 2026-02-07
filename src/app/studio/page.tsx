@@ -754,7 +754,7 @@ async function readAgentStreamEvents(
 }
 
 export default function GeneratePage() {
-  const { selectedProduct, openContextDrawer, setContextDrawerExtra, setTopBarExtra } = useAppContext()
+  const { selectedProduct, openContextDrawer, setContextDrawerExtra, setTopBarExtra, user } = useAppContext()
 
   const [threadId, setThreadId] = useState<string | null>(null)
   const [threadContext, setThreadContext] = useState<ThreadContext>({})
@@ -2560,7 +2560,7 @@ export default function GeneratePage() {
     </div>
   )
 
-  const conversationPanel = conversationOpen && (
+  const conversationPanel = conversationOpen && user?.role === 'super_admin' && (
     <div className="absolute left-4 right-4 bottom-24 z-30">
       <div className="rounded-2xl border border-[var(--editor-border)] bg-[var(--editor-panel)] shadow-[0_24px_60px_-40px_var(--editor-shadow)] overflow-hidden">
         <div className="px-4 py-3 border-b border-[var(--editor-border)] flex items-center justify-between">
@@ -2913,22 +2913,24 @@ export default function GeneratePage() {
                     />
                   </div>
                   <div className="flex items-center justify-between">
-                    <button
-                      type="button"
-                      onClick={() => setConversationOpen(true)}
-                      className="editor-icon-ghost"
-                      aria-label="View raw conversation"
-                      title="View raw conversation"
-                    >
-                      <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4" aria-hidden="true">
-                        <path
-                          d="M4 5h12a3 3 0 013 3v8a3 3 0 01-3 3H9l-5 4V8a3 3 0 013-3z"
-                          stroke="currentColor"
-                          strokeWidth="1.8"
-                          strokeLinejoin="round"
-                        />
-                      </svg>
-                    </button>
+                    {user?.role === 'super_admin' ? (
+                      <button
+                        type="button"
+                        onClick={() => setConversationOpen(true)}
+                        className="editor-icon-ghost"
+                        aria-label="View raw conversation"
+                        title="View raw conversation"
+                      >
+                        <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4" aria-hidden="true">
+                          <path
+                            d="M4 5h12a3 3 0 013 3v8a3 3 0 01-3 3H9l-5 4V8a3 3 0 013-3z"
+                            stroke="currentColor"
+                            strokeWidth="1.8"
+                            strokeLinejoin="round"
+                          />
+                        </svg>
+                      </button>
+                    ) : <div />}
                     <div className="flex items-center gap-2">
                       {sending && (
                         <button

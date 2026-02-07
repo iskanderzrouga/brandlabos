@@ -674,6 +674,7 @@ export async function POST(request: NextRequest) {
     const body = await request.json()
     const threadId = String(body.thread_id || '').trim()
     const messageText = String(body.message || '').trim()
+    const compactMode = Boolean(body.compact_mode)
 
     if (!threadId || !messageText) {
       return NextResponse.json(
@@ -847,7 +848,7 @@ export async function POST(request: NextRequest) {
       FROM agent_messages
       WHERE thread_id = ${threadId}
       ORDER BY created_at DESC
-      LIMIT ${AGENT_HISTORY_LIMIT}
+      LIMIT ${compactMode ? Math.min(AGENT_HISTORY_LIMIT, 40) : AGENT_HISTORY_LIMIT}
     `
 
     const contextHistoryRows = (
@@ -860,9 +861,11 @@ export async function POST(request: NextRequest) {
     const contextWindow = buildAgentContextMessages(
       contextHistoryRows,
       {
-        maxMessages: AGENT_CONTEXT_MAX_MESSAGES,
-        maxChars: AGENT_CONTEXT_MAX_CHARS,
-        maxCharsPerMessage: AGENT_CONTEXT_MAX_CHARS_PER_MESSAGE,
+        maxMessages: compactMode ? Math.min(AGENT_CONTEXT_MAX_MESSAGES, 8) : AGENT_CONTEXT_MAX_MESSAGES,
+        maxChars: compactMode ? Math.min(AGENT_CONTEXT_MAX_CHARS, 9_000) : AGENT_CONTEXT_MAX_CHARS,
+        maxCharsPerMessage: compactMode
+          ? Math.min(AGENT_CONTEXT_MAX_CHARS_PER_MESSAGE, 3_000)
+          : AGENT_CONTEXT_MAX_CHARS_PER_MESSAGE,
       }
     )
 
@@ -1019,12 +1022,15 @@ export async function POST(request: NextRequest) {
       return { error: `Unknown tool: ${toolUse.name}` }
     }
 
-    const activeTools = shouldEnableTools(messageText, threadContext) ? tools : undefined
+    const activeTools =
+      compactMode ? undefined : shouldEnableTools(messageText, threadContext) ? tools : undefined
     const maxSteps = activeTools ? AGENT_MAX_STEPS : 1
+    const maxTokens = compactMode ? Math.min(AGENT_MAX_TOKENS, 900) : AGENT_MAX_TOKENS
 
     const baseMeta = {
       request_id: requestId,
       model: AGENT_MODEL,
+      compact_mode: compactMode,
       estimated_input_tokens: estimatedInputTokens,
       context_1m_requested: context1MRequested,
       max_steps: maxSteps,
@@ -1050,7 +1056,7 @@ export async function POST(request: NextRequest) {
         const stream = anthropic.messages.stream(
           {
             model: AGENT_MODEL,
-            max_tokens: AGENT_MAX_TOKENS,
+            max_tokens: maxTokens,
             system: systemBuild.prompt,
             messages: workingMessages,
             ...(activeTools ? { tools: activeTools } : {}),
@@ -1155,6 +1161,7 @@ export async function POST(request: NextRequest) {
         context_1m_active: context1MActive,
         context_1m_fallback: context1MFallback,
         tool_steps: toolSteps,
+        compact_mode: compactMode,
         prompt_blocks: systemBuild.promptBlocks.map(({ content, ...rest }) => rest),
         prompt_sections: systemBuild.sections,
         context_window: contextWindow.debug,
@@ -1178,6 +1185,7 @@ export async function POST(request: NextRequest) {
         mode,
         model: AGENT_MODEL,
         status: 200,
+        compact_mode: compactMode,
         context_1m_requested: context1MRequested,
         context_1m_active: context1MActive,
         context_1m_fallback: context1MFallback,

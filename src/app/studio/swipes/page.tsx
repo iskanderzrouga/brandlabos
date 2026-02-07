@@ -15,6 +15,7 @@ type SwipeRow = {
   headline?: string | null
   ad_copy?: string | null
   cta?: string | null
+  transcript_preview?: string | null
   source_url?: string | null
   created_at?: string
   updated_at?: string
@@ -456,6 +457,8 @@ export default function SwipesPage() {
                           ? 'Running'
                           : 'Processing'
 
+              const isProcessing = s.status === 'processing'
+
               return (
                 <Link
                   key={s.id}
@@ -467,6 +470,14 @@ export default function SwipesPage() {
                       <p className="text-sm font-semibold truncate">
                         {s.title || 'Untitled swipe'}
                       </p>
+                      {isProcessing && (
+                        <div className="flex items-center gap-2 mt-2">
+                          <span className="inline-block w-3 h-3 border-2 border-[var(--editor-accent)] border-t-transparent rounded-full animate-spin" />
+                          <span className="text-xs text-[var(--editor-ink-muted)]">
+                            {s.job_status === 'running' ? 'Processing...' : 'Waiting in queue...'}
+                          </span>
+                        </div>
+                      )}
                       {s.summary && (
                         <p className="text-sm text-[var(--editor-ink-muted)] mt-2 leading-6">
                           {s.summary}
@@ -486,6 +497,11 @@ export default function SwipesPage() {
                         <span className="inline-block mt-2 text-[10px] font-medium px-2 py-0.5 rounded-full border border-[var(--editor-border)] text-[var(--editor-ink-muted)]">
                           {s.cta}
                         </span>
+                      )}
+                      {s.transcript_preview && (
+                        <p className="text-xs text-[var(--editor-ink-muted)] mt-2 leading-5 line-clamp-2 italic">
+                          {s.transcript_preview}{s.transcript_preview.length >= 200 ? '...' : ''}
+                        </p>
                       )}
                       {s.status === 'failed' && s.job_error_message && (
                         <p className="text-xs text-red-600 mt-2 truncate">

@@ -304,7 +304,7 @@ export default function SwipeDetailPage() {
 
           {swipe.status === 'ready' && videoUrl ? (
             <div className="mt-3">
-              <video src={videoUrl} controls className="w-full rounded-2xl border border-[var(--editor-border)]" />
+              <video src={videoUrl} controls className="max-w-sm w-full rounded-2xl border border-[var(--editor-border)]" />
             </div>
           ) : swipe.status === 'processing' ? (
             <p className="text-sm text-[var(--editor-ink-muted)] mt-3">

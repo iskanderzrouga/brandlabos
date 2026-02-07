@@ -66,7 +66,7 @@ export default function SwipeDetailPage() {
     return 'Processing'
   }, [stale, swipe])
 
-  const canRetry = Boolean(swipe && (swipe.status === 'failed' || stale))
+  const canRetry = Boolean(swipe && swipe.status !== 'ready')
 
   async function handleDelete() {
     if (deleting) return
@@ -110,9 +110,12 @@ export default function SwipeDetailPage() {
   useEffect(() => {
     let active = true
     const run = async () => {
-      setLoading(true)
-      setVideoUrl(null)
-      setLoadError(null)
+      if (!loading) {
+        // Silent refresh — don't flash loading state
+      } else {
+        setVideoUrl(null)
+        setLoadError(null)
+      }
       try {
         const res = await fetch(`/api/swipes/${id}?full=1`)
         const data = await res.json().catch(() => ({}))
@@ -121,15 +124,24 @@ export default function SwipeDetailPage() {
         setSwipe(data)
       } catch (error) {
         if (!active) return
-        setLoadError(error instanceof Error ? error.message : 'Failed to load swipe')
-        setSwipe(null)
+        if (loading) {
+          setLoadError(error instanceof Error ? error.message : 'Failed to load swipe')
+          setSwipe(null)
+        }
       } finally {
         if (active) setLoading(false)
       }
     }
     if (id) run()
+
+    // Auto-poll every 5s while not ready
+    const interval = setInterval(() => {
+      if (active && id) run()
+    }, 5000)
+
     return () => {
       active = false
+      clearInterval(interval)
     }
   }, [id])
 

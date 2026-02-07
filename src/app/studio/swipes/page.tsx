@@ -99,6 +99,13 @@ export default function SwipesPage() {
 
   useEffect(() => {
     load()
+
+    // Auto-poll every 5s while any swipes are processing
+    const interval = setInterval(() => {
+      if (selectedProduct) load()
+    }, 5000)
+
+    return () => clearInterval(interval)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedProduct])
 

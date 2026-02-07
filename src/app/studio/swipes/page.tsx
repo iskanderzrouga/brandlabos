@@ -84,27 +84,27 @@ export default function SwipesPage() {
     [swipes]
   )
 
-  async function load() {
+  async function load(silent = false) {
     if (!selectedProduct) return
-    setLoading(true)
+    if (!silent) setLoading(true)
     try {
       const res = await fetch(`/api/swipes?product_id=${selectedProduct}`)
       const data = await res.json()
       setSwipes(Array.isArray(data) ? data : [])
     } catch {
-      setSwipes([])
+      if (!silent) setSwipes([])
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }
 
   useEffect(() => {
     load()
 
-    // Auto-poll every 5s while any swipes are processing
+    // Silent poll every 15s to pick up processing updates
     const interval = setInterval(() => {
-      if (selectedProduct) load()
-    }, 5000)
+      if (selectedProduct) load(true)
+    }, 15000)
 
     return () => clearInterval(interval)
     // eslint-disable-next-line react-hooks/exhaustive-deps

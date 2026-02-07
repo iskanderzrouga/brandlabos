@@ -184,6 +184,7 @@ export async function loadGlobalPromptBlocks(): Promise<Map<string, PromptBlockR
 export function buildSystemPrompt(args: {
   skill: string
   versions: number
+  preferredVersions?: number[]
   product: { name: string; content: string; brandName?: string | null; brandVoice?: string | null }
   avatars: Array<{ id: string; name: string; content: string }>
   positioning?: { name: string; content: string } | null
@@ -198,7 +199,7 @@ export function buildSystemPrompt(args: {
   research?: Array<{ id: string; title?: string | null; summary?: string | null; content?: string | null }>
   blocks: Map<string, PromptBlockRow>
 }): BuiltSystemPrompt {
-  const { skill, versions, product, avatars, positioning, swipe, blocks } = args
+  const { skill, versions, preferredVersions, product, avatars, positioning, swipe, blocks } = args
 
   const agentSystemSource = resolvePromptBlock(blocks, 'agent_system')
   const skillSource = resolvePromptBlock(blocks, skill)
@@ -210,13 +211,23 @@ export function buildSystemPrompt(args: {
   const skillGuidance = skillSource.content
   const writingRules = writingRulesSource.content
   const outputContract = `## OUTPUT CONTRACT
-- Non-writing replies: one short sentence OR 1-2 bullets. Never use \`\`\`draft.
-- Writing replies: output ONLY one \`\`\`draft block and nothing before/after it.
-- Keep meta commentary outside drafts. Draft body should be final usable content only.
-- Versions rule: if all versions are requested, include headings through ## Version ${versions}.
-- If only one version is requested, output only that version heading inside the draft block.
-- Use exact headings in this exact format only: \`## Version 1\`, \`## Version 2\`, etc.
-- Do not use alternate section labels like "Option 1", "Variation 1", or "V1".`
+
+**CRITICAL RULES:**
+1. **Single draft block only**: Use exactly ONE \`\`\`draft block per response. NEVER create multiple draft blocks.
+2. **No wrapper text**: When writing drafts, output ONLY the \`\`\`draft block. Nothing before it, nothing after it.
+3. **Never write content in chat**: ALL copy, headlines, scripts, or creative output must be inside the \`\`\`draft block. Never write creative content directly in chat responses.
+4. **Non-writing replies**: For questions, confirmations, or clarifications, use one short sentence OR 1-2 bullets. Never use \`\`\`draft for these.
+
+**VERSION RULES:**
+- Total versions available: ${versions}
+- All versions must be in the SAME \`\`\`draft block using headings: \`## Version 1\`, \`## Version 2\`, etc.
+- Use exact heading format only. Do not use "Option 1", "Variation 1", "V1", or any other format.
+- If specific versions requested, output only those version sections.
+- If all versions requested, include headings through ## Version ${versions}.
+
+**DRAFT CONTENT:**
+- Keep meta commentary outside drafts. Draft body should be final, production-ready content only.
+- No explanations, notes, or instructions inside the draft block.`
 
   const sections: string[] = []
   const sectionDebug: PromptSectionInfo[] = []
@@ -234,6 +245,15 @@ export function buildSystemPrompt(args: {
   if (skillGuidance) pushSection('skill_guidance', `## SKILL GUIDANCE\n${skillGuidance}`)
   if (writingRules) pushSection('writing_rules', `## WRITING RULES\n${writingRules}`)
   pushSection('output_contract', outputContract)
+
+  // Version targeting context
+  if (versions > 1) {
+    const targetInfo =
+      preferredVersions && preferredVersions.length > 0
+        ? `Requested versions: ${preferredVersions.join(', ')}`
+        : `Default: write to ALL ${versions} versions (use ## Version 1 through ## Version ${versions})`
+    pushSection('version_targeting', `## VERSION TARGETING\n${targetInfo}\n- If user asks for specific versions only, output only those version sections\n- Otherwise, include all ${versions} versions in a single \`\`\`draft block`)
+  }
 
   pushSection(
     'product',

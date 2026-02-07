@@ -860,6 +860,7 @@ export async function POST(request: NextRequest) {
     const systemBuild = buildSystemPrompt({
       skill,
       versions,
+      preferredVersions,
       product: {
         name: productRow.name,
         content: productRow.context?.content || '',

@@ -1870,8 +1870,8 @@ export default function GeneratePage() {
       : []
     const asksAllVersions = requestLooksLikeDraft && isAllVersionsRequest(fullMessage, versions)
     const autoTargetVersions =
-      requestLooksLikeDraft && versions > 1 && explicitRequestedVersions.length === 0 && !asksAllVersions
-        ? [activeTab + 1]
+      requestLooksLikeDraft && versions === 1 && explicitRequestedVersions.length === 0 && !asksAllVersions
+        ? [1]
         : []
     const requestedVersions =
       explicitRequestedVersions.length > 0 ? explicitRequestedVersions : autoTargetVersions
@@ -2754,42 +2754,6 @@ export default function GeneratePage() {
                           {draftParts.before && (
                             <div className="editor-message">
                               {renderMarkdownBlocks(draftParts.before)}
-                            </div>
-                          )}
-
-                          {draft && (
-                            <div className="mt-3 rounded-2xl bg-[var(--editor-panel-muted)] p-3">
-                              <div className="text-[11px] font-semibold text-[var(--editor-ink)]">
-                                Draft ready for canvas
-                              </div>
-                              {versions > 1 && draftVersionCount > 0 && draftVersionCount < versions && (
-                                <p className="mt-2 text-[11px] text-[var(--editor-ink-muted)]">
-                                  Contains {draftVersionCount}/{versions} versions. Ask for missing versions by tab
-                                  (example: &quot;write Version 2 and Version 3 only&quot;).
-                                </p>
-                              )}
-
-                              <div className="mt-3 flex items-center gap-2">
-                                <button
-                                  onClick={() => insertDraftIntoCanvas(draft, 'append')}
-                                  className="editor-button-ghost text-xs"
-                                >
-                                  Insert
-                                </button>
-                                {canvasHasContent && (
-                                  <button
-                                    onClick={() => insertDraftIntoCanvas(draft, 'replace')}
-                                    className="editor-button-ghost text-xs"
-                                  >
-                                    Replace
-                                  </button>
-                                )}
-                                {versions > 1 && (
-                                  <span className="text-[11px] text-[var(--editor-ink-muted)]">
-                                    Splits by &quot;## Version N&quot;
-                                  </span>
-                                )}
-                              </div>
                             </div>
                           )}
 

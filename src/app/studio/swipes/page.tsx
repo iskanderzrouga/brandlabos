@@ -12,6 +12,9 @@ type SwipeRow = {
   status: 'processing' | 'ready' | 'failed'
   title?: string | null
   summary?: string | null
+  headline?: string | null
+  ad_copy?: string | null
+  cta?: string | null
   source_url?: string | null
   created_at?: string
   updated_at?: string
@@ -61,7 +64,7 @@ export default function SwipesPage() {
     const query = q.trim().toLowerCase()
     if (!query) return swipes
     return swipes.filter((s) => {
-      const hay = `${s.title || ''} ${s.summary || ''} ${s.source_url || ''}`.toLowerCase()
+      const hay = `${s.title || ''} ${s.summary || ''} ${s.headline || ''} ${s.ad_copy || ''} ${s.source_url || ''}`.toLowerCase()
       return hay.includes(query)
     })
   }, [q, swipes])
@@ -462,10 +465,20 @@ export default function SwipesPage() {
                           {s.summary}
                         </p>
                       )}
-                      {!s.summary && s.source_url && (
+                      {!s.summary && s.headline && (
+                        <p className="text-sm text-[var(--editor-ink-muted)] mt-2 leading-6 truncate">
+                          {s.headline}
+                        </p>
+                      )}
+                      {!s.summary && !s.headline && s.source_url && (
                         <p className="text-xs text-[var(--editor-ink-muted)] mt-2 truncate">
                           {s.source_url}
                         </p>
+                      )}
+                      {s.cta && (
+                        <span className="inline-block mt-2 text-[10px] font-medium px-2 py-0.5 rounded-full border border-[var(--editor-border)] text-[var(--editor-ink-muted)]">
+                          {s.cta}
+                        </span>
                       )}
                       {s.status === 'failed' && s.job_error_message && (
                         <p className="text-xs text-red-600 mt-2 truncate">

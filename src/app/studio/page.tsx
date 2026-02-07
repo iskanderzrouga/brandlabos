@@ -818,12 +818,12 @@ export default function GeneratePage() {
 
   const versions = Math.min(6, Math.max(1, Number(threadContext.versions || 1)))
   const selectedSkills = useMemo(
-    () => (Array.isArray(threadContext.skills) && threadContext.skills.length > 0
+    () => (Array.isArray(threadContext.skills)
       ? threadContext.skills
-      : threadContext.skill ? [threadContext.skill] : ['ugc_video_scripts']),
+      : threadContext.skill ? [threadContext.skill] : []),
     [threadContext.skills, threadContext.skill]
   )
-  const skill = selectedSkills[0]
+  const skill = selectedSkills[0] || ''
   const avatarIds = useMemo(
     () => (Array.isArray(threadContext.avatar_ids) ? threadContext.avatar_ids : []),
     [threadContext.avatar_ids]
@@ -1376,15 +1376,13 @@ export default function GeneratePage() {
                   <button
                     key={ct.id}
                     onClick={() => setThreadContext((prev) => {
-                      const current = Array.isArray(prev.skills) && prev.skills.length > 0
+                      const current = Array.isArray(prev.skills)
                         ? prev.skills
-                        : prev.skill ? [prev.skill] : ['ugc_video_scripts']
+                        : prev.skill ? [prev.skill] : []
                       const next = active
                         ? current.filter((id) => id !== ct.id)
                         : [...current, ct.id]
-                      // Ensure at least one skill is always selected
-                      if (next.length === 0) return prev
-                      return { ...prev, skills: next, skill: next[0] }
+                      return { ...prev, skills: next, skill: next[0] || '' }
                     })}
                     className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-all border ${
                       active

@@ -15,6 +15,10 @@ type SwipeRow = {
   transcript?: string | null
   source_url?: string | null
   error_message?: string | null
+  headline?: string | null
+  ad_copy?: string | null
+  cta?: string | null
+  media_type?: string | null
   created_at?: string
   updated_at?: string
   job_id?: string | null
@@ -244,6 +248,40 @@ export default function SwipeDetailPage() {
               Summary
             </p>
             <p className="text-sm leading-7 mt-2">{swipe.summary}</p>
+          </div>
+        )}
+
+        {(swipe.headline || swipe.ad_copy || swipe.cta) && (
+          <div className="editor-panel p-5 space-y-4">
+            <p className="text-[10px] uppercase tracking-[0.28em] text-[var(--editor-ink-muted)]">
+              Ad Copy
+            </p>
+            {swipe.headline && (
+              <div>
+                <p className="text-[10px] uppercase tracking-[0.22em] text-[var(--editor-ink-muted)]">
+                  Headline
+                </p>
+                <p className="text-sm font-semibold leading-6 mt-1">{swipe.headline}</p>
+              </div>
+            )}
+            {swipe.ad_copy && (
+              <div>
+                <p className="text-[10px] uppercase tracking-[0.22em] text-[var(--editor-ink-muted)]">
+                  Body
+                </p>
+                <p className="text-sm leading-6 mt-1 whitespace-pre-wrap">{swipe.ad_copy}</p>
+              </div>
+            )}
+            {swipe.cta && (
+              <div>
+                <p className="text-[10px] uppercase tracking-[0.22em] text-[var(--editor-ink-muted)]">
+                  CTA
+                </p>
+                <span className="inline-block mt-1 text-xs font-medium px-3 py-1.5 rounded-full border border-[var(--editor-border)] text-[var(--editor-ink)]">
+                  {swipe.cta}
+                </span>
+              </div>
+            )}
           </div>
         )}
 

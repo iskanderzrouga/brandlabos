@@ -410,9 +410,56 @@ async function scrapeMetaAdVideo(url) {
       .map((cookie) => `${cookie.name}=${cookie.value}`)
       .join('; ')
 
+    // Extract ad copy, headline, CTA from Meta Ad Library page
+    const adContent = await page.evaluate(() => {
+      function longest(texts) {
+        return texts.filter(Boolean).sort((a, b) => b.length - a.length)[0] || null
+      }
+      function trySelectors(selectors, minLen = 10) {
+        for (const sel of selectors) {
+          const els = document.querySelectorAll(sel)
+          const texts = Array.from(els).map(el => (el.textContent || '').trim()).filter(t => t.length >= minLen)
+          if (texts.length > 0) return longest(texts)
+        }
+        return null
+      }
+
+      const adCopy = trySelectors([
+        'div._4ik4._4ik5 span',
+        'div[data-testid="ad_body"] span',
+        'div._7jyr span',
+        'div._8jh1 span',
+        'div[class*="x1cy8zhl"] span',
+      ], 20)
+
+      const headline = trySelectors([
+        'a._231w._231z._4yee span',
+        'div._8jh2 a span',
+        'a[role="link"][href*="l.facebook.com"] span',
+        'div[class*="x1heor9g"] a span',
+      ], 3)
+
+      const cta = trySelectors([
+        'div._8jh3 span',
+        'a[data-testid="cta_button"] span',
+        'div[class*="x1i10hfl"] span[class*="x1lliihq"]',
+      ], 2)
+
+      // Determine media type
+      const hasVideo = document.querySelector('video') !== null
+      const hasCarousel = document.querySelector('div._8o0a') !== null
+      const mediaType = hasVideo ? 'video' : hasCarousel ? 'carousel' : 'image'
+
+      return { adCopy, headline, cta, mediaType }
+    }).catch(() => ({ adCopy: null, headline: null, cta: null, mediaType: 'video' }))
+
     return {
       videoUrl: best?.url || null,
       kind: best?.kind || null,
+      adCopy: adContent.adCopy || null,
+      headline: adContent.headline || null,
+      cta: adContent.cta || null,
+      mediaType: adContent.mediaType || 'video',
       requestHeaders: {
         'user-agent': userAgent,
         referer: url,
@@ -509,9 +556,23 @@ async function transcribeWhisper(openaiClient, audioPath) {
   const res = await openaiClient.audio.transcriptions.create({
     file: fs.createReadStream(audioPath),
     model: 'whisper-1',
+    response_format: 'text',
   })
-  const text = typeof res.text === 'string' ? res.text : ''
+  const text = typeof res === 'string' ? res : typeof res.text === 'string' ? res.text : ''
   return { text }
+}
+
+async function compressAudioForWhisper(inputPath, outputPath) {
+  // Compress to mono 16kHz 64kbps MP3 (matches WinnersFinder approach)
+  await runCommand('ffmpeg', [
+    '-y', '-i', inputPath,
+    '-vn',
+    '-acodec', 'libmp3lame',
+    '-ar', '16000',
+    '-ac', '1',
+    '-b:a', '64k',
+    outputPath,
+  ])
 }
 
 async function summarizeSwipe({ anthropicClient, system, prompt }) {
@@ -742,8 +803,25 @@ async function processIngestMetaAd(job) {
       cwd: tmpDir,
     })
 
+    // Check audio size — Whisper API has a 25MB limit
+    const audioStat = await fsp.stat(audioPath)
+    const WHISPER_MAX = 25 * 1024 * 1024
+    let whisperPath = audioPath
+    if (audioStat.size > WHISPER_MAX) {
+      log('Audio too large for Whisper, compressing...')
+      const compressedPath = path.join(tmpDir, 'audio_compressed.mp3')
+      await compressAudioForWhisper(mp4Path, compressedPath)
+      const compressedStat = await fsp.stat(compressedPath)
+      if (compressedStat.size <= WHISPER_MAX) {
+        whisperPath = compressedPath
+      } else {
+        log('Warning: compressed audio still >' + WHISPER_MAX + ' bytes, attempting anyway')
+        whisperPath = compressedPath
+      }
+    }
+
     log('Transcribing (Whisper)...')
-    const transcript = await transcribeWhisper(openaiClient, audioPath)
+    const transcript = await transcribeWhisper(openaiClient, whisperPath)
 
     log('Summarizing...')
     const swipeSystem = getPromptBlockContent(promptBlocks, 'swipe_summarizer_system')
@@ -772,12 +850,18 @@ async function processIngestMetaAd(job) {
           transcript = $3,
           title = COALESCE($4, title),
           summary = COALESCE($5, summary),
-          metadata = metadata || $6::jsonb,
+          headline = COALESCE($6, headline),
+          ad_copy = COALESCE($7, ad_copy),
+          cta = COALESCE($8, cta),
+          media_type = COALESCE($9, media_type),
+          metadata = metadata || $10::jsonb,
           error_message = NULL,
           updated_at = NOW()
       WHERE id = $1
     `,
-      [swipeId, r2Key, transcript.text, summary.title, summary.summary, JSON.stringify(meta)]
+      [swipeId, r2Key, transcript.text, summary.title, summary.summary,
+       scraped.headline, scraped.adCopy, scraped.cta, scraped.mediaType,
+       JSON.stringify(meta)]
     )
 
     await pool.query(

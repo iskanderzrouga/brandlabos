@@ -140,7 +140,7 @@ function normalizeVersionHeadingLine(line: string): string {
 }
 
 function isWritingIntentMessage(text: string) {
-  return /\b(write|draft|rewrite|generate|create|script|hooks?|angles?|headlines?|ideas?|versions?)\b/i.test(
+  return /\b(write|draft|rewrite|generate|create|script|hooks?|angles?|headlines?|ideas?|versions?|pitch|prompts?|copy)\b/i.test(
     text
   )
 }
@@ -1872,8 +1872,7 @@ export default function GeneratePage() {
       requestedVersions.length < versions &&
       !asksAllVersions
     const canvasEmptyAtSend = canvasRef.current.every((t) => !t.trim())
-    const streamDraftToCanvas =
-      requestLooksLikeDraft && (canvasEmptyAtSend || hasQueuedNotes || targetSpecificVersions)
+    const streamDraftToCanvas = requestLooksLikeDraft
     const pendingAssistantId = `assistant-pending-${Date.now()}`
 
     setSending(true)
@@ -1918,6 +1917,7 @@ export default function GeneratePage() {
       let lastError: string | null = null
       let fallbackAssistantMessage = ''
       let hadPartialStreamError = false
+      let canvasUpdatedFromStream = false
 
       for (let attempt = 0; attempt < 2; attempt += 1) {
         const attemptAbort = new AbortController()
@@ -1938,6 +1938,7 @@ export default function GeneratePage() {
             thread_id: threadId,
             message: fullMessage,
             target_versions: requestedVersions,
+            compact_mode: attempt > 0,
           }),
         })
 
@@ -1998,20 +1999,34 @@ export default function GeneratePage() {
                 fallbackAssistantMessage = streamedText
                 if (streamDraftToCanvas) {
                   const liveDraftBody = extractLiveDraftBody(streamedText, fullMessage)
-                  if (liveDraftBody && liveDraftBody.trim()) {
-                    const split = splitDraftVersions(liveDraftBody, versions)
+                  const fallbackBody =
+                    requestedVersions.length === 1 ? normalizeLooseDraftBody(streamedText) : null
+                  const draftLikeBody =
+                    liveDraftBody && liveDraftBody.trim()
+                      ? liveDraftBody
+                      : fallbackBody && fallbackBody.trim()
+                        ? fallbackBody
+                        : null
+
+                  if (draftLikeBody) {
+                    const split = splitDraftVersions(draftLikeBody, versions)
                     const nextTabs = mergeDraftIntoRequestedVersions({
                       currentTabs: canvasRef.current,
-                      draft: liveDraftBody,
+                      draft: draftLikeBody,
                       split,
                       requestedVersions,
                       versions,
                     })
                     if (!areTabsEqual(canvasRef.current, nextTabs)) {
                       setCanvasTabs(nextTabs)
+                      canvasUpdatedFromStream = true
                     }
-                    const firstFilled = nextTabs.findIndex((tab) => tab.trim().length > 0)
-                    if (firstFilled >= 0) setActiveTab(firstFilled)
+                    if (requestedVersions.length === 1) {
+                      setActiveTab(Math.max(0, requestedVersions[0] - 1))
+                    } else {
+                      const firstFilled = nextTabs.findIndex((tab) => tab.trim().length > 0)
+                      if (firstFilled >= 0) setActiveTab(firstFilled)
+                    }
                   }
                 } else {
                   setMessages((prev) =>
@@ -2111,6 +2126,13 @@ export default function GeneratePage() {
               }
               break
             }
+            if (streamDraftToCanvas && canvasUpdatedFromStream) {
+              data = {
+                ...(data || {}),
+                assistant_message: 'Draft updated in canvas.',
+              }
+              break
+            }
             if (attempt === 0 && !sawFirstDelta) {
               await sleep(350)
               continue
@@ -2147,6 +2169,12 @@ export default function GeneratePage() {
           assistant_message: fallbackAssistantMessage,
         }
       }
+      if (!data?.assistant_message && streamDraftToCanvas && canvasUpdatedFromStream) {
+        data = {
+          ...(data || {}),
+          assistant_message: 'Draft updated in canvas.',
+        }
+      }
       if (!data?.assistant_message) {
         throw new Error('Agent returned an invalid response format.')
       }
@@ -2156,7 +2184,9 @@ export default function GeneratePage() {
         fullMessage,
         versions
       )
-      const draft = extractDraftBlock(assistantMessage)
+      const draft =
+        extractDraftBlock(assistantMessage) ||
+        (streamDraftToCanvas ? extractLiveDraftBody(assistantMessage, fullMessage) : null)
       const shouldAutoApply = pendingAutoApplyRef.current
       pendingAutoApplyRef.current = false
       setPendingAutoApply(false)
@@ -2170,7 +2200,7 @@ export default function GeneratePage() {
         const next = prev.map((message) => {
           if (message.id !== pendingAssistantId) return message
           found = true
-          if (streamDraftToCanvas && draft) {
+          if (streamDraftToCanvas) {
             return { ...message, content: 'Draft ready in canvas.' }
           }
           return { ...message, content: assistantMessage }
@@ -2178,7 +2208,7 @@ export default function GeneratePage() {
         if (!found) {
           next.push({
             role: 'assistant',
-            content: streamDraftToCanvas && draft ? 'Draft ready in canvas.' : assistantMessage,
+            content: streamDraftToCanvas ? 'Draft ready in canvas.' : assistantMessage,
           })
         }
         return next

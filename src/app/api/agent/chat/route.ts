@@ -50,7 +50,8 @@ function boolFromEnv(name: string, fallback: boolean): boolean {
 
 const AGENT_MODEL = 'claude-opus-4-6'
 const AGENT_MAX_STEPS = positiveIntFromEnv('AGENT_MAX_STEPS', 3)
-const AGENT_MAX_TOKENS = positiveIntFromEnv('AGENT_MAX_TOKENS', 1600)
+const AGENT_TEXT_MAX_STEPS = positiveIntFromEnv('AGENT_TEXT_MAX_STEPS', 3)
+const AGENT_MAX_TOKENS = positiveIntFromEnv('AGENT_MAX_TOKENS', 2200)
 const AGENT_LOOP_BUDGET_MS = positiveIntFromEnv('AGENT_LOOP_BUDGET_MS', 90_000)
 const AGENT_HISTORY_LIMIT = positiveIntFromEnv('AGENT_HISTORY_LIMIT', 120)
 
@@ -205,13 +206,33 @@ function normalizeLooseDraftBody(raw: string): string {
 function isWritingIntent(messageText: string): boolean {
   const text = messageText.toLowerCase()
   return (
-    /\b(write|draft|rewrite|generate|create|script|hooks?|angles?|headlines?|ideas?|versions?)\b/i.test(
+    /\b(write|draft|rewrite|generate|create|script|hooks?|angles?|headlines?|ideas?|versions?|pitch|prompts?|copy)\b/i.test(
       messageText
     ) ||
     text.includes('for this script') ||
     text.includes('for thisscripts') ||
     text.includes('write just 1 draft')
   )
+}
+
+function appendWithOverlap(base: string, addition: string): string {
+  if (!base) return addition
+  if (!addition) return base
+  if (base.endsWith(addition)) return base
+
+  const maxOverlap = Math.min(base.length, addition.length, 500)
+  let overlap = 0
+  for (let size = maxOverlap; size > 0; size -= 1) {
+    if (base.slice(-size) === addition.slice(0, size)) {
+      overlap = size
+      break
+    }
+  }
+
+  const next = addition.slice(overlap)
+  if (!next) return base
+  const separator = overlap > 0 || /\s$/.test(base) || /^\s/.test(next) ? '' : '\n\n'
+  return `${base}${separator}${next}`
 }
 
 function looksLikeDraftPayload(text: string): boolean {
@@ -1024,8 +1045,8 @@ export async function POST(request: NextRequest) {
 
     const activeTools =
       compactMode ? undefined : shouldEnableTools(messageText, threadContext) ? tools : undefined
-    const maxSteps = activeTools ? AGENT_MAX_STEPS : 1
-    const maxTokens = compactMode ? Math.min(AGENT_MAX_TOKENS, 900) : AGENT_MAX_TOKENS
+    const maxSteps = activeTools ? AGENT_MAX_STEPS : AGENT_TEXT_MAX_STEPS
+    const maxTokens = compactMode ? Math.min(AGENT_MAX_TOKENS, 1400) : AGENT_MAX_TOKENS
 
     const baseMeta = {
       request_id: requestId,
@@ -1045,6 +1066,7 @@ export async function POST(request: NextRequest) {
       const loopStartedAt = Date.now()
       let modelWaitMs = 0
       let toolSteps = 0
+      let textContinuationSteps = 0
       let providerRequestId: string | null = null
       let assistantText = ''
       let workingMessages: any[] = contextMessages
@@ -1106,17 +1128,41 @@ export async function POST(request: NextRequest) {
           .filter((chunk: any) => chunk?.type === 'text')
           .map((chunk: any) => String(chunk?.text || ''))
           .filter(Boolean)
+        const stopReason =
+          typeof stepResult.finalMessage?.stop_reason === 'string'
+            ? stepResult.finalMessage.stop_reason
+            : ''
 
+        let stepText = ''
         if (textParts.length > 0) {
-          assistantText = textParts.join('\n\n').trim()
+          stepText = textParts.join('\n\n').trim()
         } else if (stepResult.streamedText.trim()) {
-          assistantText = stepResult.streamedText.trim()
+          stepText = stepResult.streamedText.trim()
+        }
+
+        if (stepText) {
+          assistantText = appendWithOverlap(assistantText, stepText)
         }
 
         const toolUses = content.filter(isToolUseBlock)
         workingMessages = workingMessages.concat([{ role: 'assistant', content }])
 
-        if (!activeTools || toolUses.length === 0) break
+        if (!activeTools) {
+          if (stopReason === 'max_tokens' && step + 1 < maxSteps) {
+            textContinuationSteps += 1
+            workingMessages = workingMessages.concat([
+              {
+                role: 'user',
+                content:
+                  'Continue exactly where you left off. Do not repeat prior text. Keep the same structure and finish the answer.',
+              },
+            ])
+            continue
+          }
+          break
+        }
+
+        if (toolUses.length === 0) break
 
         for (const toolUse of toolUses) {
           toolSteps += 1
@@ -1161,6 +1207,7 @@ export async function POST(request: NextRequest) {
         context_1m_active: context1MActive,
         context_1m_fallback: context1MFallback,
         tool_steps: toolSteps,
+        text_continuation_steps: textContinuationSteps,
         compact_mode: compactMode,
         prompt_blocks: systemBuild.promptBlocks.map(({ content, ...rest }) => rest),
         prompt_sections: systemBuild.sections,
@@ -1191,6 +1238,7 @@ export async function POST(request: NextRequest) {
         context_1m_fallback: context1MFallback,
         estimated_input_tokens: estimatedInputTokens,
         tool_steps: toolSteps,
+        text_continuation_steps: textContinuationSteps,
         draft_coerced: draftEnvelope.coerced,
         draft_distributed: draftEnvelope.distributed,
         draft_version_headings: draftEnvelope.version_headings,

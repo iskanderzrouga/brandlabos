@@ -23,28 +23,18 @@ export async function GET(request: NextRequest) {
     let rows = await sql`
       SELECT *
       FROM prompt_blocks
+      WHERE (${type}::text IS NULL OR type = ${type})
+        AND (${scope}::text IS NULL OR scope = ${scope})
+        AND (${scopeId}::text IS NULL OR scope_id = ${scopeId})
+        AND (
+          CASE
+            WHEN ${!userOverride} THEN user_id IS NULL
+            WHEN ${userId}::text IS NOT NULL THEN (user_id IS NULL OR user_id = ${userId}::uuid)
+            ELSE user_id IS NULL
+          END
+        )
       ORDER BY user_id DESC NULLS LAST, updated_at DESC NULLS LAST, version DESC, created_at DESC
     `
-
-    if (type) {
-      rows = rows.filter((row: any) => row.type === type)
-    }
-
-    if (scope) {
-      rows = rows.filter((row: any) => row.scope === scope)
-    }
-
-    if (scopeId) {
-      rows = rows.filter((row: any) => row.scope_id === scopeId)
-    }
-
-    // When not using user_override, only return global (non-user) blocks
-    // When using user_override, return user's blocks + global blocks (user wins per key)
-    if (!userOverride) {
-      rows = rows.filter((row: any) => !row.user_id)
-    } else if (userId) {
-      rows = rows.filter((row: any) => !row.user_id || row.user_id === userId)
-    }
 
     const getLogicalKey = (row: any) => {
       let metadata: any = row?.metadata
@@ -86,12 +76,10 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    console.log('POST /api/prompt-blocks - received body:', JSON.stringify(body, null, 2))
 
     const validated = createPromptBlockSchema.safeParse(body)
 
     if (!validated.success) {
-      console.error('Validation failed:', validated.error.flatten())
       return NextResponse.json(
         { error: 'Validation failed', details: validated.error.flatten() },
         { status: 400 }

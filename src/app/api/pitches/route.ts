@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
 import { z } from 'zod'
+import { requireAuth } from '@/lib/require-auth'
 
 const createPitchSchema = z.object({
   product_id: z.string().uuid(),
@@ -13,23 +14,19 @@ const createPitchSchema = z.object({
 // GET /api/pitches - List pitches with filtering
 export async function GET(request: NextRequest) {
   try {
+    const user = await requireAuth()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     const { searchParams } = new URL(request.url)
     const productId = searchParams.get('product_id')
     const activeOnly = searchParams.get('active_only') === 'true'
 
-    let rows = await sql`
+    const rows = await sql`
       SELECT *
       FROM pitches
+      WHERE (${productId}::uuid IS NULL OR product_id = ${productId}::uuid)
+        AND (${!activeOnly} OR is_active = true)
       ORDER BY created_at DESC
     `
-
-    if (productId) {
-      rows = rows.filter((row: any) => row.product_id === productId)
-    }
-
-    if (activeOnly) {
-      rows = rows.filter((row: any) => row.is_active)
-    }
 
     return NextResponse.json(rows)
   } catch (error) {
@@ -40,6 +37,8 @@ export async function GET(request: NextRequest) {
 // POST /api/pitches - Create a new pitch
 export async function POST(request: NextRequest) {
   try {
+    const user = await requireAuth()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     const body = await request.json()
     const validated = createPitchSchema.safeParse(body)
 

@@ -1,38 +1,27 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
 import { createAvatarSchema } from '@/lib/validations'
+import { requireAuth } from '@/lib/require-auth'
 
 // GET /api/avatars - List all avatars (optionally filtered by product)
 export async function GET(request: NextRequest) {
   try {
+    const user = await requireAuth()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     const { searchParams } = new URL(request.url)
     const productId = searchParams.get('product_id')
     const activeOnly = searchParams.get('active_only') === 'true'
 
-    const baseQuery = activeOnly
-      ? sql`
-          SELECT
-            avatars.*,
-            jsonb_build_object('name', products.name, 'slug', products.slug, 'brand_id', products.brand_id) AS products
-          FROM avatars
-          JOIN products ON products.id = avatars.product_id
-          WHERE avatars.is_active = true
-          ORDER BY avatars.created_at DESC
-        `
-      : sql`
-          SELECT
-            avatars.*,
-            jsonb_build_object('name', products.name, 'slug', products.slug, 'brand_id', products.brand_id) AS products
-          FROM avatars
-          JOIN products ON products.id = avatars.product_id
-          ORDER BY avatars.created_at DESC
-        `
-
-    let rows = await baseQuery
-
-    if (productId) {
-      rows = rows.filter((row: any) => row.product_id === productId)
-    }
+    const rows = await sql`
+      SELECT
+        avatars.*,
+        jsonb_build_object('name', products.name, 'slug', products.slug, 'brand_id', products.brand_id) AS products
+      FROM avatars
+      JOIN products ON products.id = avatars.product_id
+      WHERE (${productId}::uuid IS NULL OR avatars.product_id = ${productId}::uuid)
+        AND (${!activeOnly} OR avatars.is_active = true)
+      ORDER BY avatars.created_at DESC
+    `
 
     return NextResponse.json(rows)
   } catch (error) {
@@ -43,6 +32,8 @@ export async function GET(request: NextRequest) {
 // POST /api/avatars - Create a new avatar
 export async function POST(request: NextRequest) {
   try {
+    const user = await requireAuth()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     const body = await request.json()
     const validated = createAvatarSchema.safeParse(body)
 

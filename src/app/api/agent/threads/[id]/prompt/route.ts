@@ -62,13 +62,15 @@ export async function GET(request: NextRequest, ctx: { params: Promise<{ id: str
   const versions = Math.min(6, Math.max(1, Number(threadContext.versions || 1)))
 
   const avatarIds = Array.isArray(threadContext.avatar_ids) ? threadContext.avatar_ids : []
-  const avatars: Array<{ id: string; name: string; content: string }> = []
-  for (const id of avatarIds) {
-    const rows = await sql`SELECT id, name, content FROM avatars WHERE id = ${id} LIMIT 1`
-    const row = rows[0] as { id: string; name: string; content: string } | undefined
-    if (row) {
-      avatars.push({ id: row.id, name: row.name, content: row.content })
-    }
+  let avatars: Array<{ id: string; name: string; content: string }> = []
+  if (avatarIds.length > 0) {
+    const rows = (await sql`
+      SELECT id, name, content
+      FROM avatars
+      WHERE id = ANY(${avatarIds})
+    `) as Array<{ id: string; name: string; content: string }>
+    const order = new Map(avatarIds.map((id, idx) => [id, idx]))
+    avatars = (rows || []).sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0))
   }
 
   let positioning: { name: string; content: string } | null = null

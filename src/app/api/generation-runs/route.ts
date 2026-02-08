@@ -2,93 +2,27 @@ import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
 import { createGenerationRunSchema } from '@/lib/validations'
 import { promptAssembler } from '@/lib/services/prompt-assembler'
+import { requireAuth } from '@/lib/require-auth'
 
 // GET /api/generation-runs - List generation runs (filtered by product)
 export async function GET(request: NextRequest) {
   try {
+    const user = await requireAuth()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     const { searchParams } = new URL(request.url)
     const productId = searchParams.get('product_id')
     const featureType = searchParams.get('feature_type')
     const status = searchParams.get('status')
 
-    console.log('=== Generation Runs API ===')
-    console.log('Query params:', { productId, featureType, status })
-
-    let rows
-    if (productId && featureType && status) {
-      rows = await sql`
-        SELECT *
-        FROM generation_runs
-        WHERE product_id = ${productId}
-          AND feature_type = ${featureType}
-          AND status = ${status}
-        ORDER BY created_at DESC
-        LIMIT 50
-      `
-    } else if (productId && featureType) {
-      rows = await sql`
-        SELECT *
-        FROM generation_runs
-        WHERE product_id = ${productId}
-          AND feature_type = ${featureType}
-        ORDER BY created_at DESC
-        LIMIT 50
-      `
-    } else if (productId && status) {
-      rows = await sql`
-        SELECT *
-        FROM generation_runs
-        WHERE product_id = ${productId}
-          AND status = ${status}
-        ORDER BY created_at DESC
-        LIMIT 50
-      `
-    } else if (featureType && status) {
-      rows = await sql`
-        SELECT *
-        FROM generation_runs
-        WHERE feature_type = ${featureType}
-          AND status = ${status}
-        ORDER BY created_at DESC
-        LIMIT 50
-      `
-    } else if (productId) {
-      rows = await sql`
-        SELECT *
-        FROM generation_runs
-        WHERE product_id = ${productId}
-        ORDER BY created_at DESC
-        LIMIT 50
-      `
-    } else if (featureType) {
-      rows = await sql`
-        SELECT *
-        FROM generation_runs
-        WHERE feature_type = ${featureType}
-        ORDER BY created_at DESC
-        LIMIT 50
-      `
-    } else if (status) {
-      rows = await sql`
-        SELECT *
-        FROM generation_runs
-        WHERE status = ${status}
-        ORDER BY created_at DESC
-        LIMIT 50
-      `
-    } else {
-      rows = await sql`
-        SELECT *
-        FROM generation_runs
-        ORDER BY created_at DESC
-        LIMIT 50
-      `
-    }
-
-    console.log('Query result:', {
-      dataCount: rows?.length,
-      firstItem: rows?.[0]?.id
-    })
+    const rows = await sql`
+      SELECT *
+      FROM generation_runs
+      WHERE (${productId}::uuid IS NULL OR product_id = ${productId}::uuid)
+        AND (${featureType}::text IS NULL OR feature_type = ${featureType})
+        AND (${status}::text IS NULL OR status = ${status})
+      ORDER BY created_at DESC
+      LIMIT 50
+    `
 
     return NextResponse.json(rows || [])
   } catch (error) {
@@ -100,6 +34,8 @@ export async function GET(request: NextRequest) {
 // POST /api/generation-runs - Create a new generation run and assemble prompt
 export async function POST(request: NextRequest) {
   try {
+    const user = await requireAuth()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     const body = await request.json()
     const validated = createGenerationRunSchema.safeParse(body)
 

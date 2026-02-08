@@ -229,6 +229,10 @@ function normalizeLooseDraftBody(raw: string): string {
 }
 
 function isWritingIntent(messageText: string): boolean {
+  // "write down/out" = transcribe or list, not compose
+  if (/\bwrit(?:e|ing)\s+(?:down|out)\b/i.test(messageText)) return false
+  // Meta-discussion about writing behavior referencing chat/canvas UI
+  if (/\b(?:writ(?:e|es|ing|ten)|wrote|draft(?:ed|ing)?)\b/i.test(messageText) && /\b(?:in\s+(?:the\s+)?)?(?:chat|canvas)\b/i.test(messageText)) return false
   const text = messageText.toLowerCase()
   return (
     /\b(write|draft|rewrite|generate|create|script|hooks?|angles?|headlines?|ideas?|versions?|pitch|prompts?|copy)\b/i.test(

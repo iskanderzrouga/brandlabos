@@ -147,6 +147,10 @@ function normalizeVersionHeadingLine(line: string): string {
 }
 
 function isWritingIntentMessage(text: string) {
+  // "write down/out" = transcribe or list, not compose
+  if (/\bwrit(?:e|ing)\s+(?:down|out)\b/i.test(text)) return false
+  // Meta-discussion about writing behavior referencing chat/canvas UI
+  if (/\b(?:writ(?:e|es|ing|ten)|wrote|draft(?:ed|ing)?)\b/i.test(text) && /\b(?:in\s+(?:the\s+)?)?(?:chat|canvas)\b/i.test(text)) return false
   return /\b(write|draft|rewrite|generate|create|script|hooks?|angles?|headlines?|ideas?|versions?|pitch|prompts?|copy)\b/i.test(
     text
   )

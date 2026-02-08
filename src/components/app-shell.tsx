@@ -49,9 +49,34 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [organizations, setOrganizations] = useState<Org[]>([])
   const [brands, setBrands] = useState<Brand[]>([])
   const [products, setProducts] = useState<Product[]>([])
-  const [selectedOrg, setSelectedOrg] = useState<string | null>(null)
-  const [selectedBrand, setSelectedBrand] = useState<string | null>(null)
-  const [selectedProduct, setSelectedProduct] = useState<string | null>(null)
+  const [selectedOrg, setSelectedOrgRaw] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null
+    return localStorage.getItem('bl_selected_org') || null
+  })
+  const [selectedBrand, setSelectedBrandRaw] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null
+    return localStorage.getItem('bl_selected_brand') || null
+  })
+  const [selectedProduct, setSelectedProductRaw] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null
+    return localStorage.getItem('bl_selected_product') || null
+  })
+
+  const setSelectedOrg = (id: string | null) => {
+    setSelectedOrgRaw(id)
+    if (id) localStorage.setItem('bl_selected_org', id)
+    else localStorage.removeItem('bl_selected_org')
+  }
+  const setSelectedBrand = (id: string | null) => {
+    setSelectedBrandRaw(id)
+    if (id) localStorage.setItem('bl_selected_brand', id)
+    else localStorage.removeItem('bl_selected_brand')
+  }
+  const setSelectedProduct = (id: string | null) => {
+    setSelectedProductRaw(id)
+    if (id) localStorage.setItem('bl_selected_product', id)
+    else localStorage.removeItem('bl_selected_product')
+  }
   const [loading, setLoading] = useState(true)
   const [user, setUser] = useState<AuthUser | null>(null)
 
@@ -101,6 +126,9 @@ export function AppShell({ children }: { children: ReactNode }) {
         setOrganizations(data)
         if (data.length > 0 && !selectedOrg) {
           setSelectedOrg(data[0].id)
+        } else if (selectedOrg && data.length > 0 && !data.some((o: Org) => o.id === selectedOrg)) {
+          // Saved org no longer exists — fall back to first
+          setSelectedOrg(data[0].id)
         }
       })
       .finally(() => setLoading(false))
@@ -118,7 +146,12 @@ export function AppShell({ children }: { children: ReactNode }) {
       .then(data => {
         setBrands(data)
         if (data.length > 0) {
-          setSelectedBrand(data[0].id)
+          const savedBrand = selectedBrand || localStorage.getItem('bl_selected_brand')
+          if (savedBrand && data.some((b: Brand) => b.id === savedBrand)) {
+            setSelectedBrand(savedBrand)
+          } else {
+            setSelectedBrand(data[0].id)
+          }
         } else {
           setSelectedBrand(null)
         }
@@ -137,7 +170,12 @@ export function AppShell({ children }: { children: ReactNode }) {
       .then(data => {
         setProducts(data)
         if (data.length > 0) {
-          setSelectedProduct(data[0].id)
+          const savedProduct = selectedProduct || localStorage.getItem('bl_selected_product')
+          if (savedProduct && data.some((p: Product) => p.id === savedProduct)) {
+            setSelectedProduct(savedProduct)
+          } else {
+            setSelectedProduct(data[0].id)
+          }
         } else {
           setSelectedProduct(null)
         }

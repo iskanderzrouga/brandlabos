@@ -506,49 +506,13 @@ function ensureDraftEnvelope(args: {
     }
   }
 
-  if (!looksLikeDraftPayload(trimmed)) {
-    return {
-      text: assistantText,
-      coerced: false,
-      distributed: false,
-      version_headings: 0,
-      requested_versions: requestedVersions,
-    }
-  }
-
-  let body = normalizeLooseDraftBody(trimmed)
-  let versionHeadings = getVersionHeadingNumbers(body).size
-
-  if (versions > 1 && versionHeadings === 0 && allVersionsRequested) {
-    const distributedBody = distributeDraftAcrossVersions(body, versions)
-    if (distributedBody) {
-      body = distributedBody
-      distributed = true
-      versionHeadings = getVersionHeadingNumbers(body).size
-    }
-  }
-
-  if (!allVersionsRequested && requestedVersions.length > 0) {
-    body = filterDraftToRequestedVersions(body, requestedVersions)
-    versionHeadings = getVersionHeadingNumbers(body).size
-  }
-
-  if (versions > 1 && versionHeadings === 0) {
-    if (requestedVersions.length === 1 && !allVersionsRequested) {
-      body = `## Version ${requestedVersions[0]}\n${body}`.trim()
-      versionHeadings = 1
-    } else {
-      body = `## Version 1\n${body}`.trim()
-      versionHeadings = 1
-    }
-  }
-
+  // No explicit ```draft block — return as plain chat text
   return {
-    text: `\`\`\`draft\n${body}\n\`\`\``,
-    coerced: true,
-    distributed,
-    version_headings: versionHeadings,
-    requested_versions: requestedVersions,
+    text: assistantText,
+    coerced: false,
+    distributed: false,
+    version_headings: 0,
+    requested_versions: [],
   }
 }
 

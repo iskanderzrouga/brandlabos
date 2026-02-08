@@ -281,11 +281,10 @@ function isAllVersionsRequest(messageText: string, versions: number): boolean {
 function extractLiveDraftBody(text: string, _userMessage: string): string | null {
   const trimmed = text.trim()
   if (!trimmed) return null
-  // Trust the model's decision to use ```draft blocks (governed by OUTPUT CONTRACT)
+  // Trust the model — only extract explicit ```draft blocks
   const draft = extractDraftBlock(trimmed)
   if (draft) return normalizeLooseDraftBody(draft)
-  if (!looksLikeDraftPayload(trimmed)) return null
-  return normalizeLooseDraftBody(trimmed)
+  return null
 }
 
 function countDraftVersionHeadings(draft: string): number {
@@ -316,8 +315,7 @@ function coerceAssistantDraftEnvelope(text: string, _userMessage: string, versio
   if (existingDraft) {
     body = normalizeLooseDraftBody(existingDraft)
   } else {
-    if (!looksLikeDraftPayload(trimmed)) return text
-    body = normalizeLooseDraftBody(trimmed)
+    return text
   }
 
   if (versions > 1 && !/^##\s*Version\s*\d+/im.test(body)) {

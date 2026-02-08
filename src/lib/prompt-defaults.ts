@@ -397,10 +397,4 @@ You are an expert direct-response copywriter and creative director. Your job is 
   },
 }
 
-// Content type to prompt block key mapping
-export const CONTENT_TYPE_KEYS: Record<string, string> = {
-  organic_static: 'organic_static',
-  ugc_video_scripts: 'ugc_video_scripts',
-  landing_page_copy: 'landing_page_copy',
-  advertorial_copy: 'advertorial_copy',
-}
+

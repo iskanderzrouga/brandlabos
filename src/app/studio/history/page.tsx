@@ -49,18 +49,13 @@ export default function HistoryPage() {
     fetch(`/api/generation-runs?product_id=${selectedProduct}`)
       .then(r => r.json())
       .then(data => {
-        console.log('History API response:', data)
         if (Array.isArray(data)) {
           setRuns(data)
-        } else if (data.error) {
-          console.error('History API error:', data.error)
-          setRuns([])
         } else {
           setRuns([])
         }
       })
-      .catch(err => {
-        console.error('Failed to fetch history:', err)
+      .catch(() => {
         setRuns([])
       })
       .finally(() => setLoading(false))

@@ -32,14 +32,12 @@ export async function PATCH(request: NextRequest, { params }: Params) {
   try {
     const { id } = await params
     const body = await request.json()
-    console.log('PATCH /api/prompt-blocks/' + id + ' - received body keys:', Object.keys(body))
 
     const userId = typeof body.user_id === 'string' ? body.user_id : null
 
     const validated = updatePromptBlockSchema.safeParse(body)
 
     if (!validated.success) {
-      console.error('PATCH validation failed:', validated.error.flatten())
       return NextResponse.json(
         { error: 'Validation failed', details: validated.error.flatten() },
         { status: 400 }

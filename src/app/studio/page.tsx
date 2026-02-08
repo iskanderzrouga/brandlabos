@@ -274,7 +274,8 @@ function isAllVersionsRequest(messageText: string, versions: number): boolean {
     text.includes('each version') ||
     text.includes('all versions') ||
     (text.includes('v1') && text.includes('v2')) ||
-    /version\s*1[\s\S]*version\s*2/i.test(messageText)
+    /version\s*1[\s\S]*version\s*2/i.test(messageText) ||
+    /version\s*2[\s\S]*version\s*3/i.test(messageText)
   )
 }
 
@@ -2256,7 +2257,7 @@ export default function GeneratePage() {
         if (shouldAutoApply) {
           applyDraftAuto(draft)
           draftAppliedToCanvas = true
-        } else if (canvasEmptyAtSend || streamDraftToCanvas) {
+        } else {
           const split = splitDraftVersions(draft, versions)
           const nextTabs = mergeDraftIntoRequestedVersions({
             currentTabs: canvasRef.current,
@@ -2271,7 +2272,7 @@ export default function GeneratePage() {
           if (firstFilled >= 0) setActiveTab(firstFilled)
         }
       }
-      const shouldShowCanvasStatus = streamDraftToCanvas && (draftAppliedToCanvas || canvasUpdatedFromStream)
+      const shouldShowCanvasStatus = draftAppliedToCanvas || canvasUpdatedFromStream
       setMessages((prev) => {
         let found = false
         const next = prev.map((message) => {

@@ -54,7 +54,7 @@ export async function DELETE(_request: NextRequest, context: { params: Promise<{
 
   try {
     const rows = await sql`
-      SELECT id, r2_video_key
+      SELECT id, r2_video_key, r2_image_key
       FROM swipes
       WHERE id = ${id}
       LIMIT 1
@@ -72,6 +72,14 @@ export async function DELETE(_request: NextRequest, context: { params: Promise<{
         await deleteR2Object(swipe.r2_video_key)
       } catch (err) {
         console.warn('Failed to delete swipe video from R2:', err)
+      }
+    }
+
+    if (swipe.r2_image_key) {
+      try {
+        await deleteR2Object(swipe.r2_image_key)
+      } catch (err) {
+        console.warn('Failed to delete swipe image from R2:', err)
       }
     }
 

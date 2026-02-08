@@ -2,12 +2,16 @@ import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
 import { updateAppUserSchema } from '@/lib/validations'
 import { hashPassword } from '@/lib/passwords'
+import { requireAuth } from '@/lib/require-auth'
 
 type Params = { params: Promise<{ id: string }> }
 
 // GET /api/users/[id] - Get single user with access info
 export async function GET(request: NextRequest, { params }: Params) {
   try {
+    const user = await requireAuth()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (user.role !== 'super_admin') return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     const { id } = await params
     const users = await sql`
       SELECT id, email, name, role, is_active, created_at, updated_at
@@ -16,8 +20,8 @@ export async function GET(request: NextRequest, { params }: Params) {
       LIMIT 1
     `
 
-    const user = users[0]
-    if (!user) {
+    const targetUser = users[0]
+    if (!targetUser) {
       return NextResponse.json({ error: 'User not found' }, { status: 404 })
     }
 
@@ -32,7 +36,7 @@ export async function GET(request: NextRequest, { params }: Params) {
     `
 
     const response = {
-      ...user,
+      ...targetUser,
       user_organization_access: orgAccess.map((row) => ({
         organization_id: row.organization_id,
         organizations: { id: row.org_id, name: row.org_name },
@@ -48,6 +52,9 @@ export async function GET(request: NextRequest, { params }: Params) {
 // PATCH /api/users/[id] - Update user
 export async function PATCH(request: NextRequest, { params }: Params) {
   try {
+    const user = await requireAuth()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (user.role !== 'super_admin') return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     const { id } = await params
     const body = await request.json()
 
@@ -93,6 +100,9 @@ export async function PATCH(request: NextRequest, { params }: Params) {
 // DELETE /api/users/[id] - Delete user from both app_users and Supabase Auth
 export async function DELETE(request: NextRequest, { params }: Params) {
   try {
+    const user = await requireAuth()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (user.role !== 'super_admin') return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     const { id } = await params
     const rows = await sql`
       DELETE FROM app_users

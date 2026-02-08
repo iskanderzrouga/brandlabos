@@ -154,7 +154,7 @@ export default function SwipeDetailPage() {
 
   useEffect(() => {
     let active = true
-    if (!swipe || swipe.status !== 'ready' || videoUrl) return
+    if (!swipe || swipe.status !== 'ready' || videoUrl || swipe.media_type === 'image') return
     const run = async () => {
       try {
         const res = await fetch(`/api/swipes/${swipe.id}/video-url`)

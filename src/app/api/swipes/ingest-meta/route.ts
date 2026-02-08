@@ -5,7 +5,7 @@ import { requireAuth } from '@/lib/require-auth'
 function classifySwipeUrl(url: string): { supported: boolean; source: string } {
   try {
     const u = new URL(url)
-    if (!u.hostname.includes('facebook.com')) return { supported: false, source: '' }
+    if (u.hostname !== 'facebook.com' && !u.hostname.endsWith('.facebook.com')) return { supported: false, source: '' }
     if (u.pathname.includes('/ads/library')) return { supported: true, source: 'meta_ad_library' }
     if (u.pathname.includes('/reel/')) return { supported: true, source: 'facebook_reel' }
     if (u.pathname.includes('/posts/') || u.pathname.includes('/permalink/'))

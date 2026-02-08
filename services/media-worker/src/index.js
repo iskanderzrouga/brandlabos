@@ -555,11 +555,33 @@ async function scrapeFacebookReel(url) {
       .map((c) => `${c.name}=${c.value}`)
       .join('; ')
 
+    // If no video found, try to extract an image as fallback
+    let imageUrl = null
+    if (!best) {
+      imageUrl = await page.evaluate(() => {
+        const imgs = Array.from(document.querySelectorAll('img'))
+        const scored = imgs
+          .filter((img) => {
+            const w = img.naturalWidth || img.width || 0
+            const h = img.naturalHeight || img.height || 0
+            const src = img.src || ''
+            if (w < 300 || h < 200) return false
+            if (src.includes('rsrc.php') || src.includes('/static/') || src.includes('emoji')) return false
+            if (img.closest('header, nav, [role="banner"]')) return false
+            return true
+          })
+          .map((img) => ({ src: img.src, area: (img.naturalWidth || img.width) * (img.naturalHeight || img.height) }))
+          .sort((a, b) => b.area - a.area)
+        return scored[0]?.src || null
+      }).catch(() => null)
+    }
+
     return {
       videoUrl: best?.url || null,
+      imageUrl,
       kind: best?.kind || null,
       title,
-      mediaType: 'video',
+      mediaType: best ? 'video' : imageUrl ? 'image' : 'video',
       requestHeaders: {
         'user-agent': FB_USER_AGENT,
         referer: url,
@@ -932,7 +954,7 @@ async function summarizeSwipe({ anthropicClient, system, prompt }) {
     messages: [{ role: 'user', content: prompt }],
   })
   const text = message.content.find((c) => c.type === 'text')?.text || ''
-  const cleaned = (text.match(/```json\\s*([\\s\\S]*?)\\s*```/) || [null, text])[1].trim()
+  const cleaned = (text.match(/```json\s*([\s\S]*?)\s*```/) || [null, text])[1].trim()
   try {
     const parsed = JSON.parse(cleaned)
     return {
@@ -940,7 +962,6 @@ async function summarizeSwipe({ anthropicClient, system, prompt }) {
       summary: typeof parsed.summary === 'string' ? parsed.summary : null,
     }
   } catch {
-    // Fallback: keep it usable even if the model didn't comply.
     return {
       title: null,
       summary: cleaned.slice(0, 800),
@@ -956,7 +977,7 @@ async function summarizeResearch({ anthropicClient, system, prompt }) {
     messages: [{ role: 'user', content: prompt }],
   })
   const content = message.content.find((c) => c.type === 'text')?.text || ''
-  const cleaned = (content.match(/```json\\s*([\\s\\S]*?)\\s*```/) || [null, content])[1].trim()
+  const cleaned = (content.match(/```json\s*([\s\S]*?)\s*```/) || [null, content])[1].trim()
   try {
     const parsed = JSON.parse(cleaned)
     return {
@@ -966,7 +987,7 @@ async function summarizeResearch({ anthropicClient, system, prompt }) {
     }
   } catch {
     return {
-      title: title || null,
+      title: null,
       summary: cleaned.slice(0, 800),
       keywords: [],
     }

@@ -100,7 +100,7 @@ function extractFacebookUrls(text: string): string[] {
 function isSupportedSwipeUrl(url: string) {
   try {
     const parsed = new URL(url)
-    if (!parsed.hostname.includes('facebook.com')) return false
+    if (parsed.hostname !== 'facebook.com' && !parsed.hostname.endsWith('.facebook.com')) return false
     return (
       parsed.pathname.includes('/ads/library') ||
       parsed.pathname.includes('/reel/') ||

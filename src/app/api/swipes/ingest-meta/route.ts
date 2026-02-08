@@ -2,12 +2,17 @@ import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
 import { requireAuth } from '@/lib/require-auth'
 
-function isMetaAdLibraryUrl(url: string) {
+function classifySwipeUrl(url: string): { supported: boolean; source: string } {
   try {
     const u = new URL(url)
-    return u.hostname.includes('facebook.com') && u.pathname.includes('/ads/library')
+    if (!u.hostname.includes('facebook.com')) return { supported: false, source: '' }
+    if (u.pathname.includes('/ads/library')) return { supported: true, source: 'meta_ad_library' }
+    if (u.pathname.includes('/reel/')) return { supported: true, source: 'facebook_reel' }
+    if (u.pathname.includes('/posts/') || u.pathname.includes('/permalink/'))
+      return { supported: true, source: 'facebook_post' }
+    return { supported: false, source: '' }
   } catch {
-    return false
+    return { supported: false, source: '' }
   }
 }
 
@@ -24,14 +29,18 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'product_id and url are required' }, { status: 400 })
     }
 
-    if (!isMetaAdLibraryUrl(sourceUrl)) {
-      return NextResponse.json({ error: 'Only Meta Ad Library URLs are supported in v1' }, { status: 400 })
+    const urlInfo = classifySwipeUrl(sourceUrl)
+    if (!urlInfo.supported) {
+      return NextResponse.json(
+        { error: 'Unsupported URL. Supported: Meta Ad Library, Facebook posts, Facebook reels.' },
+        { status: 400 }
+      )
     }
 
     // Create or reuse swipe for this product + URL
     const swipeRows = await sql`
       INSERT INTO swipes (product_id, source, source_url, status, created_by)
-      VALUES (${productId}, 'meta_ad_library', ${sourceUrl}, 'processing', ${user.id})
+      VALUES (${productId}, ${urlInfo.source}, ${sourceUrl}, 'processing', ${user.id})
       ON CONFLICT (product_id, source, source_url) DO UPDATE SET
         updated_at = NOW(),
         status = CASE WHEN swipes.status = 'failed' THEN 'processing' ELSE swipes.status END,
@@ -86,8 +95,7 @@ export async function POST(request: NextRequest) {
       status: swipe.status,
     })
   } catch (error) {
-    console.error('Ingest meta swipe error:', error)
+    console.error('Ingest swipe error:', error)
     return NextResponse.json({ error: 'Failed to ingest swipe' }, { status: 500 })
   }
 }
-

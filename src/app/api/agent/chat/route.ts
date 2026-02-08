@@ -6,6 +6,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { sql } from '@/lib/db'
 import { requireAuth } from '@/lib/require-auth'
 import { getOrgApiKey } from '@/lib/api-keys'
+import { signR2GetObjectUrl } from '@/lib/r2'
 import {
   AGENT_CONTEXT_DEFAULTS,
   buildAgentContextMessages,
@@ -88,20 +89,37 @@ function isToolUseBlock(block: unknown): block is ToolUseBlock {
   )
 }
 
-function extractMetaAdLibraryUrls(text: string): string[] {
-  const regex = /(https?:\/\/[^\s]+?facebook\.com\/ads\/library\/[^\s]*)/gi
+function extractFacebookUrls(text: string): string[] {
+  const regex = /(https?:\/\/[^\s]+?facebook\.com\/[^\s]*)/gi
   const matches = text.match(regex) || []
   return matches
     .map((match) => match.replace(/[),.;!?]+$/g, ''))
-    .filter(Boolean)
+    .filter((url) => isSupportedSwipeUrl(url))
 }
 
-function isMetaAdLibraryUrl(url: string) {
+function isSupportedSwipeUrl(url: string) {
   try {
     const parsed = new URL(url)
-    return parsed.hostname.includes('facebook.com') && parsed.pathname.includes('/ads/library')
+    if (!parsed.hostname.includes('facebook.com')) return false
+    return (
+      parsed.pathname.includes('/ads/library') ||
+      parsed.pathname.includes('/reel/') ||
+      parsed.pathname.includes('/posts/') ||
+      parsed.pathname.includes('/permalink/')
+    )
   } catch {
     return false
+  }
+}
+
+function classifySwipeSource(url: string): string {
+  try {
+    const parsed = new URL(url)
+    if (parsed.pathname.includes('/ads/library')) return 'meta_ad_library'
+    if (parsed.pathname.includes('/reel/')) return 'facebook_reel'
+    return 'facebook_post'
+  } catch {
+    return 'facebook_post'
   }
 }
 
@@ -119,6 +137,7 @@ function shouldEnableTools(messageText: string, threadContext: ThreadContext) {
 
   const text = messageText.toLowerCase()
   if (text.includes('facebook.com/ads/library')) return true
+  if (text.includes('facebook.com') && (text.includes('/posts/') || text.includes('/reel/') || text.includes('/permalink/'))) return true
 
   return (
     text.includes('ingest meta') ||
@@ -648,10 +667,11 @@ function writeSseEvent(
 
 async function ingestMetaSwipe(args: { productId: string; url: string; userId: string }) {
   const { productId, url, userId } = args
+  const source = classifySwipeSource(url)
 
   const swipeRows = await sql`
     INSERT INTO swipes (product_id, source, source_url, status, created_by)
-    VALUES (${productId}, 'meta_ad_library', ${url}, 'processing', ${userId})
+    VALUES (${productId}, ${source}, ${url}, 'processing', ${userId})
     ON CONFLICT (product_id, source, source_url) DO UPDATE SET
       updated_at = NOW(),
       status = CASE WHEN swipes.status = 'failed' THEN 'processing' ELSE swipes.status END,
@@ -768,7 +788,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    const urls = extractMetaAdLibraryUrls(messageText).filter(isMetaAdLibraryUrl)
+    const urls = extractFacebookUrls(messageText)
     let maybeSwipe: any = null
     if (urls.length > 0) {
       const url = urls[0]
@@ -850,7 +870,7 @@ export async function POST(request: NextRequest) {
     let swipe: any = null
     if (threadContext.active_swipe_id) {
       const rows = await sql`
-        SELECT id, status, title, summary, transcript, source_url
+        SELECT id, status, title, transcript, source_url, r2_image_key, media_type
         FROM swipes
         WHERE id = ${threadContext.active_swipe_id}
           AND product_id = ${thread.product_id}
@@ -960,7 +980,7 @@ export async function POST(request: NextRequest) {
       {
         name: 'ingest_meta_ad_url',
         description:
-          'Ingest a Meta Ad Library URL: create a swipe record and enqueue a transcription job. Returns swipe_id and status.',
+          'Ingest a Facebook URL (Ad Library, post, or reel): create a swipe record and enqueue processing. Returns swipe_id and status.',
         input_schema: {
           type: 'object',
           properties: {
@@ -1002,8 +1022,8 @@ export async function POST(request: NextRequest) {
       if (toolUse.name === 'ingest_meta_ad_url') {
         const url = String((toolUse.input as any)?.url || '').trim()
         const productId = thread.product_id
-        if (!url || !isMetaAdLibraryUrl(url)) {
-          return { error: 'Invalid Meta Ad Library URL' }
+        if (!url || !isSupportedSwipeUrl(url)) {
+          return { error: 'Invalid URL. Supported: Meta Ad Library, Facebook posts, Facebook reels.' }
         }
 
         const ingest = await ingestMetaSwipe({ productId, url, userId: authedUser.id })
@@ -1103,7 +1123,28 @@ export async function POST(request: NextRequest) {
       let textContinuationSteps = 0
       let providerRequestId: string | null = null
       let assistantText = ''
-      let workingMessages: any[] = contextMessages
+      let workingMessages: any[] = [...contextMessages]
+
+      // Inject swipe image into last user message for Claude vision
+      if (swipe?.r2_image_key && swipe.status === 'ready') {
+        try {
+          const swipeImageUrl = await signR2GetObjectUrl(swipe.r2_image_key, 300)
+          const lastUserIdx = workingMessages.findLastIndex((m: any) => m.role === 'user')
+          if (lastUserIdx >= 0) {
+            const msg = workingMessages[lastUserIdx]
+            const textContent = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)
+            workingMessages[lastUserIdx] = {
+              role: 'user',
+              content: [
+                { type: 'image', source: { type: 'url', url: swipeImageUrl } },
+                { type: 'text', text: textContent },
+              ],
+            }
+          }
+        } catch (imgErr) {
+          console.warn('Failed to inject swipe image:', imgErr)
+        }
+      }
 
       const runSingleStep = async (useContext1M: boolean) => {
         const stepStartedAt = Date.now()

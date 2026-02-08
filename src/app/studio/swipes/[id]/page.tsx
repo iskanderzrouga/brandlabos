@@ -41,6 +41,7 @@ export default function SwipeDetailPage() {
   const [loading, setLoading] = useState(true)
   const [swipe, setSwipe] = useState<SwipeRow | null>(null)
   const [videoUrl, setVideoUrl] = useState<string | null>(null)
+  const [imageUrl, setImageUrl] = useState<string | null>(null)
   const [showTranscript, setShowTranscript] = useState(true)
   const [feedback, setFeedback] = useState<{ tone: 'info' | 'success' | 'error'; message: string } | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -169,6 +170,25 @@ export default function SwipeDetailPage() {
       active = false
     }
   }, [swipe?.status, swipe?.id, videoUrl])
+
+  useEffect(() => {
+    let active = true
+    if (!swipe || swipe.status !== 'ready' || imageUrl || swipe.media_type !== 'image') return
+    const run = async () => {
+      try {
+        const res = await fetch(`/api/swipes/${swipe.id}/image-url`)
+        const data = await res.json()
+        if (!active) return
+        if (res.ok && data?.url) setImageUrl(data.url)
+      } catch {
+        // ignore
+      }
+    }
+    run()
+    return () => {
+      active = false
+    }
+  }, [swipe?.status, swipe?.id, swipe?.media_type, imageUrl])
 
   if (loading) {
     return (
@@ -324,10 +344,14 @@ export default function SwipeDetailPage() {
 
         <div className="editor-panel p-5">
           <p className="text-[10px] uppercase tracking-[0.28em] text-[var(--editor-ink-muted)]">
-            Video
+            Media
           </p>
 
-          {swipe.status === 'ready' && videoUrl ? (
+          {swipe.status === 'ready' && imageUrl ? (
+            <div className="mt-3">
+              <img src={imageUrl} alt={swipe.title || 'Swipe image'} className="max-w-xs w-full rounded-2xl border border-[var(--editor-border)]" />
+            </div>
+          ) : swipe.status === 'ready' && videoUrl ? (
             <div className="mt-3">
               <video src={videoUrl} controls className="max-w-xs w-full rounded-2xl border border-[var(--editor-border)]" />
             </div>
@@ -344,7 +368,7 @@ export default function SwipeDetailPage() {
             </p>
           ) : (
             <p className="text-sm text-[var(--editor-ink-muted)] mt-3">
-              Video not available yet.
+              Media not available yet.
             </p>
           )}
         </div>

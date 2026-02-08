@@ -125,6 +125,7 @@ export async function GET(request: NextRequest) {
           swipes.headline,
           swipes.ad_copy,
           swipes.cta,
+          swipes.media_type,
           LEFT(swipes.transcript, 200) AS transcript_preview,
           swipes.created_at,
           swipes.updated_at,
@@ -145,6 +146,8 @@ export async function GET(request: NextRequest) {
           AND (
             title ILIKE ${like}
             OR summary ILIKE ${like}
+            OR headline ILIKE ${like}
+            OR ad_copy ILIKE ${like}
             OR source_url ILIKE ${like}
           )
         ORDER BY created_at DESC
@@ -165,6 +168,7 @@ export async function GET(request: NextRequest) {
         swipes.headline,
         swipes.ad_copy,
         swipes.cta,
+        swipes.media_type,
         LEFT(swipes.transcript, 200) AS transcript_preview,
         swipes.created_at,
         swipes.updated_at,

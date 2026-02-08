@@ -204,9 +204,9 @@ export function buildSystemPrompt(args: {
     id: string
     status: string
     title?: string | null
-    summary?: string | null
     transcript?: string | null
     source_url?: string | null
+    media_type?: string | null
   } | null
   research?: Array<{ id: string; title?: string | null; summary?: string | null; content?: string | null }>
   blocks: Map<string, PromptBlockRow>
@@ -308,9 +308,12 @@ export function buildSystemPrompt(args: {
   if (swipe) {
     const transcript =
       swipe.status === 'ready' && swipe.transcript ? swipe.transcript.slice(0, 7000) : null
+    const mediaLine = swipe.media_type === 'image'
+      ? 'Media type: image (image attached to user message if available)'
+      : 'Media type: video'
     pushSection(
       'active_swipe',
-      `## ACTIVE SWIPE\nStatus: ${swipe.status}\nURL: ${swipe.source_url || ''}\nTitle: ${swipe.title || ''}\nSummary: ${swipe.summary || ''}\n\nTranscript:\n${transcript || '(not ready yet)'}\n`
+      `## ACTIVE SWIPE\nStatus: ${swipe.status}\nURL: ${swipe.source_url || ''}\nTitle: ${swipe.title || ''}\n${mediaLine}\n\nTranscript:\n${transcript || '(none)'}\n`
     )
   }
 

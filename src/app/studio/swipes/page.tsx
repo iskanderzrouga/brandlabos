@@ -15,6 +15,7 @@ type SwipeRow = {
   headline?: string | null
   ad_copy?: string | null
   cta?: string | null
+  media_type?: string | null
   transcript_preview?: string | null
   source_url?: string | null
   created_at?: string
@@ -517,6 +518,11 @@ export default function SwipesPage() {
                     >
                       {statusLabel}
                     </span>
+                    {s.media_type && (
+                      <span className="editor-tag text-[9px]">
+                        {s.media_type === 'image' ? 'Image' : s.media_type === 'carousel' ? 'Carousel' : 'Video'}
+                      </span>
+                    )}
                   </div>
 
                   <div className="mt-4 flex items-center justify-between gap-3">

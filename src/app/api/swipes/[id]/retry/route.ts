@@ -6,15 +6,6 @@ const STALE_MS = 10 * 60 * 1000
 
 type Params = { params: Promise<{ id: string }> }
 
-function isMetaAdLibraryUrl(url: string) {
-  try {
-    const u = new URL(url)
-    return u.hostname.includes('facebook.com') && u.pathname.includes('/ads/library')
-  } catch {
-    return false
-  }
-}
-
 export async function POST(_request: Request, { params }: Params) {
   const user = await requireAuth()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -31,8 +22,8 @@ export async function POST(_request: Request, { params }: Params) {
     const swipe = swipeRows[0]
     if (!swipe) return NextResponse.json({ error: 'Swipe not found' }, { status: 404 })
 
-    if (swipe.source !== 'meta_ad_library' || !isMetaAdLibraryUrl(String(swipe.source_url || ''))) {
-      return NextResponse.json({ error: 'Retry is only available for Meta Ad Library swipes' }, { status: 400 })
+    if (!swipe.source_url) {
+      return NextResponse.json({ error: 'Retry is only available for URL-based swipes' }, { status: 400 })
     }
 
     const jobRows = await sql`

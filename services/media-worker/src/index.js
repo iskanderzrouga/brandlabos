@@ -282,6 +282,190 @@ function decodeEscapedUrl(value) {
     .replace(/\\u002f/gi, '/')
 }
 
+function classifySwipeUrl(url) {
+  try {
+    const u = new URL(url)
+    if (!u.hostname.includes('facebook.com')) return null
+    if (u.pathname.includes('/ads/library')) return 'ad_library'
+    if (u.pathname.includes('/reel/')) return 'fb_reel'
+    if (u.pathname.includes('/posts/') || u.pathname.includes('/permalink/')) return 'fb_post'
+    return null
+  } catch {
+    return null
+  }
+}
+
+const FB_USER_AGENT =
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+
+async function scrapeFacebookPost(url) {
+  log('Scraping Facebook post via HTTP fetch...', url)
+  const res = await fetch(url, {
+    redirect: 'follow',
+    headers: { 'user-agent': FB_USER_AGENT, accept: 'text/html' },
+  })
+  if (!res.ok) throw new Error(`Facebook post fetch failed: ${res.status}`)
+  const html = await res.text()
+
+  // Try to extract video URLs from page source
+  let videoUrl = null
+  const videoPatterns = [
+    /"browser_native_hd_url"\s*:\s*"([^"]+)"/i,
+    /"browser_native_sd_url"\s*:\s*"([^"]+)"/i,
+    /"playable_url_quality_hd"\s*:\s*"([^"]+)"/i,
+    /"playable_url"\s*:\s*"([^"]+)"/i,
+  ]
+  for (const pattern of videoPatterns) {
+    const match = html.match(pattern)
+    if (match) {
+      videoUrl = decodeEscapedUrl(match[1])
+      break
+    }
+  }
+
+  // Extract image from og:image meta tag
+  let imageUrl = null
+  const ogImageMatch = html.match(/<meta\s+property="og:image"\s+content="([^"]+)"/i)
+    || html.match(/<meta\s+content="([^"]+)"\s+property="og:image"/i)
+  if (ogImageMatch) {
+    imageUrl = ogImageMatch[1].replace(/&amp;/g, '&')
+  }
+
+  // Extract title
+  let title = null
+  const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i)
+  if (titleMatch) title = titleMatch[1].trim()
+  const ogTitleMatch = html.match(/<meta\s+property="og:title"\s+content="([^"]+)"/i)
+    || html.match(/<meta\s+content="([^"]+)"\s+property="og:title"/i)
+  if (ogTitleMatch) title = ogTitleMatch[1].replace(/&amp;/g, '&')
+
+  // Extract description as ad copy
+  let adCopy = null
+  const descMatch = html.match(/<meta\s+property="og:description"\s+content="([^"]+)"/i)
+    || html.match(/<meta\s+content="([^"]+)"\s+property="og:description"/i)
+  if (descMatch) adCopy = descMatch[1].replace(/&amp;/g, '&')
+
+  const mediaType = videoUrl ? 'video' : imageUrl ? 'image' : null
+  return {
+    videoUrl,
+    imageUrl,
+    title,
+    adCopy,
+    headline: null,
+    cta: null,
+    mediaType,
+    requestHeaders: { 'user-agent': FB_USER_AGENT, referer: url },
+  }
+}
+
+async function scrapeFacebookReel(url) {
+  log('Scraping Facebook reel via Playwright...', url)
+  const browser = await chromium.launch({
+    headless: true,
+    args: ['--no-sandbox', '--disable-dev-shm-usage'],
+  })
+
+  const page = await browser.newPage({
+    userAgent: FB_USER_AGENT,
+    viewport: { width: 1360, height: 768 },
+    locale: 'en-US',
+  })
+
+  const candidates = []
+  const seen = new Set()
+  const pushCandidate = (candidate) => {
+    const normalizedUrl = decodeEscapedUrl(candidate?.url || '').trim()
+    if (!normalizedUrl || seen.has(normalizedUrl)) return
+    seen.add(normalizedUrl)
+    const kind = /\.m3u8(\?|$)/i.test(normalizedUrl) ? 'hls' : 'mp4'
+    const next = {
+      url: normalizedUrl,
+      source: candidate?.source || 'unknown',
+      contentType: candidate?.contentType || '',
+      contentLength: Number(candidate?.contentLength || 0) || 0,
+      kind,
+    }
+    next.score = scoreVideoCandidate(next)
+    candidates.push(next)
+  }
+
+  page.on('response', async (res) => {
+    try {
+      const responseUrl = res.url()
+      const headers = res.headers()
+      const ct = headers['content-type'] || ''
+      const len = Number(headers['content-length'] || 0) || 0
+      const looksVideo =
+        ct.startsWith('video/') ||
+        ct.includes('mpegurl') ||
+        /\.mp4(\?|$)/i.test(responseUrl) ||
+        /\.m3u8(\?|$)/i.test(responseUrl)
+      if (!looksVideo) return
+      pushCandidate({ url: responseUrl, source: 'network', contentType: ct, contentLength: len })
+    } catch { /* ignore */ }
+  })
+
+  try {
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+    await page.waitForTimeout(2_000)
+    const video = page.locator('video').first()
+    if ((await video.count()) > 0) {
+      await video.click({ timeout: 2_000 }).catch(() => {})
+    }
+    await page.mouse.wheel(0, 900)
+    await page.waitForTimeout(6_000)
+
+    // DOM video sources
+    const domSources = await page.$$eval('video', (nodes) => {
+      const urls = []
+      for (const node of nodes) {
+        if (node.currentSrc) urls.push(node.currentSrc)
+        if (node.src) urls.push(node.src)
+        for (const child of node.querySelectorAll('source')) {
+          if (child.src) urls.push(child.src)
+        }
+      }
+      return Array.from(new Set(urls.filter(Boolean)))
+    })
+    for (const src of domSources) pushCandidate({ url: src, source: 'dom' })
+
+    // HTML regex
+    const html = await page.content()
+    const urlMatches = html.match(/https?:\/\/[^"'\\\s>]+(\.mp4|\.m3u8)[^"'\\\s>]*/gi) || []
+    for (const match of urlMatches) pushCandidate({ url: match, source: 'html' })
+
+    const encodedMatches =
+      html.match(/"(playable_url_quality_hd|playable_url|browser_native_sd_url)"\s*:\s*"([^"]+)"/gi) || []
+    for (const match of encodedMatches) {
+      const parsed = match.match(/"(playable_url_quality_hd|playable_url|browser_native_sd_url)"\s*:\s*"([^"]+)"/i)
+      if (parsed) pushCandidate({ url: parsed[2], source: parsed[1] })
+    }
+
+    candidates.sort((a, b) => b.score - a.score)
+    const best = candidates[0] || null
+    const title = await page.title().catch(() => null)
+    const cookieHeader = (await page.context().cookies())
+      .map((c) => `${c.name}=${c.value}`)
+      .join('; ')
+
+    return {
+      videoUrl: best?.url || null,
+      kind: best?.kind || null,
+      title,
+      mediaType: 'video',
+      requestHeaders: {
+        'user-agent': FB_USER_AGENT,
+        referer: url,
+        ...(cookieHeader ? { cookie: cookieHeader } : {}),
+      },
+      meta: { candidate_count: candidates.length, selected_source: best?.source || null },
+    }
+  } finally {
+    await page.close().catch(() => {})
+    await browser.close().catch(() => {})
+  }
+}
+
 function scoreVideoCandidate(candidate) {
   const url = String(candidate?.url || '')
   const contentType = String(candidate?.contentType || '').toLowerCase()
@@ -453,8 +637,30 @@ async function scrapeMetaAdVideo(url) {
       return { adCopy, headline, cta, mediaType }
     }).catch(() => ({ adCopy: null, headline: null, cta: null, mediaType: 'video' }))
 
+    // If no video found and media type is image, extract the ad image
+    let imageUrl = null
+    if (!best && adContent.mediaType === 'image') {
+      imageUrl = await page.evaluate(() => {
+        const imgs = Array.from(document.querySelectorAll('img'))
+        // Filter out tiny icons/logos, find the largest content image
+        const scored = imgs
+          .filter((img) => {
+            const w = img.naturalWidth || img.width || 0
+            const h = img.naturalHeight || img.height || 0
+            return w > 200 && h > 200
+          })
+          .map((img) => ({
+            src: img.src,
+            area: (img.naturalWidth || img.width) * (img.naturalHeight || img.height),
+          }))
+          .sort((a, b) => b.area - a.area)
+        return scored[0]?.src || null
+      }).catch(() => null)
+    }
+
     return {
       videoUrl: best?.url || null,
+      imageUrl,
       kind: best?.kind || null,
       adCopy: adContent.adCopy || null,
       headline: adContent.headline || null,
@@ -744,145 +950,190 @@ async function processIngestMetaAd(job) {
   }
 
   const orgId = await getOrgIdForProduct(productId)
-  const openaiClient = await getOpenAiClient(orgId)
   const anthropicClient = await getAnthropicClient(orgId)
   const promptBlocks = await loadGlobalPromptBlocks()
 
-  log('Scraping video URL...', url)
-  const scraped = await scrapeMetaAdVideo(url)
-  if (!scraped.videoUrl) throw new Error('Failed to locate MP4 URL from Meta page')
+  // Classify URL and route to appropriate scraper
+  const urlType = classifySwipeUrl(url) || 'ad_library'
+  log('Scraping URL...', url, 'type:', urlType)
+
+  let scraped
+  if (urlType === 'fb_post') {
+    scraped = await scrapeFacebookPost(url)
+  } else if (urlType === 'fb_reel') {
+    scraped = await scrapeFacebookReel(url)
+  } else {
+    scraped = await scrapeMetaAdVideo(url)
+  }
+
+  const hasVideo = Boolean(scraped.videoUrl)
+  const hasImage = Boolean(scraped.imageUrl)
+
+  if (!hasVideo && !hasImage) {
+    throw new Error('No video or image found on page')
+  }
 
   const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'brandlab-swipe-'))
-  const mp4Path = path.join(tmpDir, 'source.mp4')
-  const audioPath = path.join(tmpDir, 'audio.mp3')
 
   try {
-    const maxBytes = 250 * 1024 * 1024 // 250MB guardrail
-    const looksHls =
-      scraped.kind === 'hls' || /\.m3u8(\?|$)/i.test(String(scraped.videoUrl || ''))
+    if (hasVideo) {
+      // ---- VIDEO PATH ----
+      const openaiClient = await getOpenAiClient(orgId)
+      const mp4Path = path.join(tmpDir, 'source.mp4')
+      const audioPath = path.join(tmpDir, 'audio.mp3')
+      const maxBytes = 250 * 1024 * 1024
 
-    if (looksHls) {
-      log('Downloading HLS stream via ffmpeg...')
-      const headerLines = Object.entries(scraped.requestHeaders || {})
-        .map(([k, v]) => `${k}: ${v}\r\n`)
-        .join('')
-      const ffmpegArgs = ['-y']
-      if (headerLines) {
-        ffmpegArgs.push('-headers', headerLines)
-      }
-      ffmpegArgs.push(
-        '-i',
-        scraped.videoUrl,
-        '-c:v',
-        'libx264',
-        '-preset',
-        'veryfast',
-        '-c:a',
-        'aac',
-        '-movflags',
-        '+faststart',
-        mp4Path
-      )
-      await runCommand('ffmpeg', ffmpegArgs, { cwd: tmpDir })
-    } else {
-      log('Downloading MP4...')
-      await downloadToFile(scraped.videoUrl, mp4Path, maxBytes, scraped.requestHeaders || {})
-    }
+      const looksHls =
+        scraped.kind === 'hls' || /\.m3u8(\?|$)/i.test(String(scraped.videoUrl || ''))
 
-    const downloaded = await fsp.stat(mp4Path)
-    if (downloaded.size > maxBytes) {
-      throw new Error(`Video too large after download (${downloaded.size} bytes)`)
-    }
-
-    const r2Key = `products/${productId}/swipes/${swipeId}/source.mp4`
-    log('Uploading to R2...', r2Key)
-    await uploadToR2(r2Key, mp4Path, 'video/mp4')
-
-    log('Extracting audio...')
-    await runCommand('ffmpeg', ['-y', '-i', mp4Path, '-vn', '-acodec', 'mp3', '-b:a', '128k', audioPath], {
-      cwd: tmpDir,
-    })
-
-    // Check audio size — Whisper API has a 25MB limit
-    const audioStat = await fsp.stat(audioPath)
-    const WHISPER_MAX = 25 * 1024 * 1024
-    let whisperPath = audioPath
-    if (audioStat.size > WHISPER_MAX) {
-      log('Audio too large for Whisper, compressing...')
-      const compressedPath = path.join(tmpDir, 'audio_compressed.mp3')
-      await compressAudioForWhisper(mp4Path, compressedPath)
-      const compressedStat = await fsp.stat(compressedPath)
-      if (compressedStat.size <= WHISPER_MAX) {
-        whisperPath = compressedPath
+      if (looksHls) {
+        log('Downloading HLS stream via ffmpeg...')
+        const headerLines = Object.entries(scraped.requestHeaders || {})
+          .map(([k, v]) => `${k}: ${v}\r\n`)
+          .join('')
+        const ffmpegArgs = ['-y']
+        if (headerLines) ffmpegArgs.push('-headers', headerLines)
+        ffmpegArgs.push(
+          '-i', scraped.videoUrl,
+          '-c:v', 'libx264', '-preset', 'veryfast',
+          '-c:a', 'aac', '-movflags', '+faststart',
+          mp4Path
+        )
+        await runCommand('ffmpeg', ffmpegArgs, { cwd: tmpDir })
       } else {
-        log('Warning: compressed audio still >' + WHISPER_MAX + ' bytes, attempting anyway')
+        log('Downloading MP4...')
+        await downloadToFile(scraped.videoUrl, mp4Path, maxBytes, scraped.requestHeaders || {})
+      }
+
+      const downloaded = await fsp.stat(mp4Path)
+      if (downloaded.size > maxBytes) {
+        throw new Error(`Video too large after download (${downloaded.size} bytes)`)
+      }
+
+      const r2Key = `products/${productId}/swipes/${swipeId}/source.mp4`
+      log('Uploading video to R2...', r2Key)
+      await uploadToR2(r2Key, mp4Path, 'video/mp4')
+
+      log('Extracting audio...')
+      await runCommand('ffmpeg', ['-y', '-i', mp4Path, '-vn', '-acodec', 'mp3', '-b:a', '128k', audioPath], {
+        cwd: tmpDir,
+      })
+
+      const audioStat = await fsp.stat(audioPath)
+      const WHISPER_MAX = 25 * 1024 * 1024
+      let whisperPath = audioPath
+      if (audioStat.size > WHISPER_MAX) {
+        log('Audio too large for Whisper, compressing...')
+        const compressedPath = path.join(tmpDir, 'audio_compressed.mp3')
+        await compressAudioForWhisper(mp4Path, compressedPath)
         whisperPath = compressedPath
       }
+
+      log('Transcribing (Whisper)...')
+      const transcript = await transcribeWhisper(openaiClient, whisperPath)
+
+      log('Summarizing...')
+      const swipeSystem = getPromptBlockContent(promptBlocks, 'swipe_summarizer_system')
+      const swipePromptTemplate = getPromptBlockContent(promptBlocks, 'swipe_summarizer_prompt')
+      const swipePrompt = applyTemplate(swipePromptTemplate, {
+        url,
+        transcript: transcript.text.slice(0, 12000),
+      })
+      const summary = await summarizeSwipe({ anthropicClient, system: swipeSystem, prompt: swipePrompt })
+
+      const meta = {
+        ...(scraped.meta || {}),
+        video_url: scraped.videoUrl,
+        video_kind: scraped.kind || null,
+        url_type: urlType,
+      }
+
+      await pool.query(
+        `
+        UPDATE swipes
+        SET status = 'ready',
+            r2_video_key = $2,
+            transcript = $3,
+            title = COALESCE($4, title),
+            summary = COALESCE($5, summary),
+            headline = COALESCE($6, headline),
+            ad_copy = COALESCE($7, ad_copy),
+            cta = COALESCE($8, cta),
+            media_type = COALESCE($9, media_type),
+            metadata = metadata || $10::jsonb,
+            error_message = NULL,
+            updated_at = NOW()
+        WHERE id = $1
+      `,
+        [swipeId, r2Key, transcript.text, summary.title, summary.summary,
+         scraped.headline || null, scraped.adCopy || null, scraped.cta || null,
+         scraped.mediaType || 'video', JSON.stringify(meta)]
+      )
+
+      await pool.query(
+        `UPDATE media_jobs SET status = 'completed', output = $2, error_message = NULL, updated_at = NOW() WHERE id = $1`,
+        [job.id, { swipe_id: swipeId, r2_video_key: r2Key, transcript_len: transcript.text.length, title: summary.title }]
+      )
+    } else {
+      // ---- IMAGE PATH ----
+      log('Processing image swipe...')
+      const imageUrl = scraped.imageUrl
+      const ext = /\.(png|gif|webp)/i.test(imageUrl) ? imageUrl.match(/\.(png|gif|webp)/i)[1].toLowerCase() : 'jpg'
+      const mime = ext === 'png' ? 'image/png' : ext === 'gif' ? 'image/gif' : ext === 'webp' ? 'image/webp' : 'image/jpeg'
+      const imagePath = path.join(tmpDir, `source.${ext}`)
+
+      log('Downloading image...')
+      await downloadToFile(imageUrl, imagePath, 50 * 1024 * 1024, scraped.requestHeaders || {})
+
+      const r2ImageKey = `products/${productId}/swipes/${swipeId}/source.${ext}`
+      log('Uploading image to R2...', r2ImageKey)
+      await uploadToR2(r2ImageKey, imagePath, mime)
+
+      // Summarize from ad copy text (no transcript for images)
+      let summary = { title: null, summary: null }
+      const adText = [scraped.headline, scraped.adCopy, scraped.cta].filter(Boolean).join('\n')
+      if (adText.length > 10) {
+        log('Summarizing from ad copy...')
+        const swipeSystem = getPromptBlockContent(promptBlocks, 'swipe_summarizer_system')
+        const swipePrompt = `Return JSON with keys: title, summary.\n\nURL: ${url}\n\nAd copy:\n${adText.slice(0, 6000)}`
+        summary = await summarizeSwipe({ anthropicClient, system: swipeSystem, prompt: swipePrompt })
+      } else if (scraped.title) {
+        summary = { title: scraped.title.slice(0, 140), summary: null }
+      }
+
+      const meta = {
+        ...(scraped.meta || {}),
+        image_url: imageUrl,
+        url_type: urlType,
+      }
+
+      await pool.query(
+        `
+        UPDATE swipes
+        SET status = 'ready',
+            r2_image_key = $2,
+            r2_image_mime = $3,
+            title = COALESCE($4, title),
+            summary = COALESCE($5, summary),
+            headline = COALESCE($6, headline),
+            ad_copy = COALESCE($7, ad_copy),
+            cta = COALESCE($8, cta),
+            media_type = 'image',
+            metadata = metadata || $9::jsonb,
+            error_message = NULL,
+            updated_at = NOW()
+        WHERE id = $1
+      `,
+        [swipeId, r2ImageKey, mime, summary.title, summary.summary,
+         scraped.headline || null, scraped.adCopy || null, scraped.cta || null,
+         JSON.stringify(meta)]
+      )
+
+      await pool.query(
+        `UPDATE media_jobs SET status = 'completed', output = $2, error_message = NULL, updated_at = NOW() WHERE id = $1`,
+        [job.id, { swipe_id: swipeId, r2_image_key: r2ImageKey, title: summary.title }]
+      )
     }
-
-    log('Transcribing (Whisper)...')
-    const transcript = await transcribeWhisper(openaiClient, whisperPath)
-
-    log('Summarizing...')
-    const swipeSystem = getPromptBlockContent(promptBlocks, 'swipe_summarizer_system')
-    const swipePromptTemplate = getPromptBlockContent(promptBlocks, 'swipe_summarizer_prompt')
-    const swipePrompt = applyTemplate(swipePromptTemplate, {
-      url,
-      transcript: transcript.text.slice(0, 12000),
-    })
-    const summary = await summarizeSwipe({
-      anthropicClient,
-      system: swipeSystem,
-      prompt: swipePrompt,
-    })
-
-    const meta = {
-      ...scraped.meta,
-      video_url: scraped.videoUrl,
-      video_kind: scraped.kind || null,
-    }
-
-    await pool.query(
-      `
-      UPDATE swipes
-      SET status = 'ready',
-          r2_video_key = $2,
-          transcript = $3,
-          title = COALESCE($4, title),
-          summary = COALESCE($5, summary),
-          headline = COALESCE($6, headline),
-          ad_copy = COALESCE($7, ad_copy),
-          cta = COALESCE($8, cta),
-          media_type = COALESCE($9, media_type),
-          metadata = metadata || $10::jsonb,
-          error_message = NULL,
-          updated_at = NOW()
-      WHERE id = $1
-    `,
-      [swipeId, r2Key, transcript.text, summary.title, summary.summary,
-       scraped.headline, scraped.adCopy, scraped.cta, scraped.mediaType,
-       JSON.stringify(meta)]
-    )
-
-    await pool.query(
-      `
-      UPDATE media_jobs
-      SET status = 'completed',
-          output = $2,
-          error_message = NULL,
-          updated_at = NOW()
-      WHERE id = $1
-    `,
-      [
-        job.id,
-        {
-          swipe_id: swipeId,
-          r2_video_key: r2Key,
-          transcript_len: transcript.text.length,
-          title: summary.title,
-        },
-      ]
-    )
 
     log('Done.', swipeId)
   } finally {

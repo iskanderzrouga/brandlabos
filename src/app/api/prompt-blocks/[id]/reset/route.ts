@@ -32,10 +32,16 @@ export async function POST(request: NextRequest, { params }: Params) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
 
-    if (presetName) {
-      const existingMeta = typeof block.metadata === 'object' && block.metadata ? block.metadata : {}
-      const updatedMeta = { ...existingMeta, preset_name: presetName }
+    // Parse metadata safely — Neon may return JSONB as string or object
+    let existingMeta: Record<string, any> = {}
+    if (typeof block.metadata === 'string') {
+      try { existingMeta = JSON.parse(block.metadata) } catch { /* empty */ }
+    } else if (typeof block.metadata === 'object' && block.metadata) {
+      existingMeta = block.metadata
+    }
 
+    if (presetName) {
+      const updatedMeta = { ...existingMeta, preset_name: presetName }
       await sql`
         UPDATE prompt_blocks
         SET is_active = false, metadata = ${updatedMeta}

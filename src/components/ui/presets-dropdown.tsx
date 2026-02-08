@@ -7,7 +7,7 @@ type HistoryEntry = {
   content: string
   version: number
   updated_at: string
-  metadata?: { preset_name?: string; key?: string }
+  metadata?: Record<string, any> | string
 }
 
 type PresetsDropdownProps = {
@@ -15,6 +15,14 @@ type PresetsDropdownProps = {
   scope: string
   onRestore: (content: string) => void
   disabled?: boolean
+}
+
+function parseMeta(raw: any): Record<string, any> | null {
+  if (typeof raw === 'string') {
+    try { return JSON.parse(raw) } catch { return null }
+  }
+  if (typeof raw === 'object' && raw) return raw
+  return null
 }
 
 export function PresetsDropdown({ metadataKey, scope, onRestore, disabled }: PresetsDropdownProps) {
@@ -38,14 +46,13 @@ export function PresetsDropdown({ metadataKey, scope, onRestore, disabled }: Pre
     setLoading(true)
     try {
       const res = await fetch(
-        `/api/prompt-blocks?scope=${scope}&include_history=true&active_only=false&metadata_key=${encodeURIComponent(metadataKey)}`
+        `/api/prompt-blocks?scope=${scope}&include_history=true&active_only=false&user_override=true&metadata_key=${encodeURIComponent(metadataKey)}`
       )
       const data = await res.json()
       if (!Array.isArray(data)) {
         setEntries([])
         return
       }
-      // Filter to inactive entries only (history, not current active)
       const inactive = data
         .filter((row: any) => !row.is_active)
         .slice(0, 10)
@@ -55,6 +62,15 @@ export function PresetsDropdown({ metadataKey, scope, onRestore, disabled }: Pre
     } finally {
       setLoading(false)
     }
+  }
+
+  async function deleteEntry(id: string) {
+    try {
+      const res = await fetch(`/api/prompt-blocks/${id}`, { method: 'DELETE' })
+      if (res.ok) {
+        setEntries((prev) => prev.filter((e) => e.id !== id))
+      }
+    } catch { /* ignore */ }
   }
 
   function handleToggle() {
@@ -79,12 +95,44 @@ export function PresetsDropdown({ metadataKey, scope, onRestore, disabled }: Pre
   }
 
   function getPresetName(entry: HistoryEntry) {
-    const meta = typeof entry.metadata === 'object' && entry.metadata ? entry.metadata : null
+    const meta = parseMeta(entry.metadata)
     return meta?.preset_name || null
   }
 
   const presets = entries.filter((e) => getPresetName(e))
   const unnamed = entries.filter((e) => !getPresetName(e))
+
+  function renderEntry(entry: HistoryEntry, label: string) {
+    return (
+      <div
+        key={entry.id}
+        className="flex items-center justify-between px-3 py-2 text-xs border-b border-[var(--editor-border)] last:border-b-0 hover:bg-[var(--editor-accent-soft)] transition-colors"
+      >
+        <button
+          type="button"
+          onClick={() => {
+            onRestore(entry.content)
+            setOpen(false)
+          }}
+          className="flex-1 text-left min-w-0"
+        >
+          <div className="font-medium text-[var(--editor-ink)] truncate">{label}</div>
+          <div className="text-[var(--editor-ink-muted)]">{formatDate(entry.updated_at)}</div>
+        </button>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation()
+            deleteEntry(entry.id)
+          }}
+          className="ml-2 text-[var(--editor-ink-muted)] hover:text-red-400 shrink-0"
+          title="Delete"
+        >
+          &times;
+        </button>
+      </div>
+    )
+  }
 
   return (
     <div className="relative" ref={ref}>
@@ -105,41 +153,13 @@ export function PresetsDropdown({ metadataKey, scope, onRestore, disabled }: Pre
             <div className="p-3 text-xs text-[var(--editor-ink-muted)]">No version history</div>
           ) : (
             <div className="max-h-64 overflow-auto">
-              {presets.map((entry) => (
-                <button
-                  key={entry.id}
-                  type="button"
-                  onClick={() => {
-                    onRestore(entry.content)
-                    setOpen(false)
-                  }}
-                  className="w-full text-left px-3 py-2 text-xs hover:bg-[var(--editor-accent-soft)] transition-colors border-b border-[var(--editor-border)] last:border-b-0"
-                >
-                  <div className="font-medium text-[var(--editor-ink)]">{getPresetName(entry)}</div>
-                  <div className="text-[var(--editor-ink-muted)]">{formatDate(entry.updated_at)}</div>
-                </button>
-              ))}
+              {presets.map((entry) => renderEntry(entry, getPresetName(entry)!))}
               {presets.length > 0 && unnamed.length > 0 && (
                 <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider text-[var(--editor-ink-muted)] bg-[var(--editor-panel-muted)]">
                   Previous versions
                 </div>
               )}
-              {unnamed.map((entry) => (
-                <button
-                  key={entry.id}
-                  type="button"
-                  onClick={() => {
-                    onRestore(entry.content)
-                    setOpen(false)
-                  }}
-                  className="w-full text-left px-3 py-2 text-xs hover:bg-[var(--editor-accent-soft)] transition-colors border-b border-[var(--editor-border)] last:border-b-0"
-                >
-                  <div className="font-medium text-[var(--editor-ink)]">
-                    Version {entry.version}
-                  </div>
-                  <div className="text-[var(--editor-ink-muted)]">{formatDate(entry.updated_at)}</div>
-                </button>
-              ))}
+              {unnamed.map((entry) => renderEntry(entry, `Version ${entry.version}`))}
             </div>
           )}
         </div>

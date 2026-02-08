@@ -278,11 +278,10 @@ function isAllVersionsRequest(messageText: string, versions: number): boolean {
   )
 }
 
-function extractLiveDraftBody(text: string, userMessage: string): string | null {
+function extractLiveDraftBody(text: string, _userMessage: string): string | null {
   const trimmed = text.trim()
   if (!trimmed) return null
-  // Only extract draft blocks when user actually asked for writing
-  if (!isWritingIntentMessage(userMessage)) return null
+  // Trust the model's decision to use ```draft blocks (governed by OUTPUT CONTRACT)
   const draft = extractDraftBlock(trimmed)
   if (draft) return normalizeLooseDraftBody(draft)
   if (!looksLikeDraftPayload(trimmed)) return null
@@ -306,13 +305,11 @@ function countDraftVersionHeadings(draft: string): number {
   return set.size
 }
 
-function coerceAssistantDraftEnvelope(text: string, userMessage: string, versions: number) {
+function coerceAssistantDraftEnvelope(text: string, _userMessage: string, versions: number) {
   const trimmed = text.trim()
   if (!trimmed) return text
 
-  // Gate ALL draft coercion on writing intent - even if AI generated ```draft on its own
-  if (!isWritingIntentMessage(userMessage)) return text
-
+  // Trust the model's decision — if it used ```draft, route to canvas
   const existingDraft = extractDraftBlock(trimmed)
   let body: string
 

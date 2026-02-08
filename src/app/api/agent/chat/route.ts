@@ -483,19 +483,9 @@ function ensureDraftEnvelope(args: {
     : explicitRequestedVersions.length > 0
       ? explicitRequestedVersions
       : sanitizePreferredVersions(preferredVersions, versions)
-  // Gate ALL draft processing on writing intent -- even AI-generated ```draft blocks.
-  // If user sent a conversational message ("hey listen"), strip draft wrappers.
-  if (!isWritingIntent(userMessage)) {
-    return {
-      text: existingDraftBody
-        ? trimmed.replace(/```draft\s*([\s\S]*?)\s*```/gi, '$1').trim()
-        : assistantText,
-      coerced: false,
-      distributed: false,
-      version_headings: 0,
-      requested_versions: [],
-    }
-  }
+  // Trust the model's decision — if it used ```draft, route to canvas.
+  // The OUTPUT CONTRACT instructs the model: "Never use ```draft for
+  // questions, confirmations, or clarifications."
 
   if (existingDraftBody) {
     let body = normalizeLooseDraftBody(existingDraftBody)

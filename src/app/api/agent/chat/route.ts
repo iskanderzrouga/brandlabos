@@ -239,7 +239,7 @@ function isWritingIntent(messageText: string): boolean {
       messageText
     ) ||
     text.includes('for this script') ||
-    text.includes('for thisscripts') ||
+    text.includes('for these scripts') ||
     text.includes('write just 1 draft') ||
     text.includes('edit notes based on selected text')
   )

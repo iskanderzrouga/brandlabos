@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
 import { createProductSchema } from '@/lib/validations'
+import { requireAuth } from '@/lib/require-auth'
 
 // GET /api/products - List all products (optionally filtered by brand)
 export async function GET(request: NextRequest) {
   try {
+    const user = await requireAuth()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     const { searchParams } = new URL(request.url)
     const brandId = searchParams.get('brand_id')
 
@@ -49,11 +52,12 @@ export async function GET(request: NextRequest) {
 // POST /api/products - Create a new product
 export async function POST(request: NextRequest) {
   try {
+    const user = await requireAuth()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     const body = await request.json()
     const validated = createProductSchema.safeParse(body)
 
     if (!validated.success) {
-      console.error('Product validation failed:', validated.error.flatten())
       return NextResponse.json(
         { error: 'Validation failed', details: validated.error.flatten() },
         { status: 400 }
@@ -84,7 +88,6 @@ export async function POST(request: NextRequest) {
 
       return NextResponse.json(responseData, { status: 201 })
     } catch (error: any) {
-      console.error('Product creation error:', error)
       if (error?.code === '23505') {
         return NextResponse.json(
           { error: 'Product with this slug already exists for this brand' },

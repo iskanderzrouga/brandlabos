@@ -299,62 +299,169 @@ const FB_USER_AGENT =
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
 
 async function scrapeFacebookPost(url) {
-  log('Scraping Facebook post via HTTP fetch...', url)
-  const res = await fetch(url, {
-    redirect: 'follow',
-    headers: { 'user-agent': FB_USER_AGENT, accept: 'text/html' },
+  log('Scraping Facebook post via Playwright...', url)
+  const browser = await chromium.launch({
+    headless: true,
+    args: ['--no-sandbox', '--disable-dev-shm-usage'],
   })
-  if (!res.ok) throw new Error(`Facebook post fetch failed: ${res.status}`)
-  const html = await res.text()
 
-  // Try to extract video URLs from page source
-  let videoUrl = null
-  const videoPatterns = [
-    /"browser_native_hd_url"\s*:\s*"([^"]+)"/i,
-    /"browser_native_sd_url"\s*:\s*"([^"]+)"/i,
-    /"playable_url_quality_hd"\s*:\s*"([^"]+)"/i,
-    /"playable_url"\s*:\s*"([^"]+)"/i,
-  ]
-  for (const pattern of videoPatterns) {
-    const match = html.match(pattern)
-    if (match) {
-      videoUrl = decodeEscapedUrl(match[1])
-      break
+  const page = await browser.newPage({
+    userAgent: FB_USER_AGENT,
+    viewport: { width: 1360, height: 768 },
+    locale: 'en-US',
+  })
+
+  // Capture video network requests
+  const candidates = []
+  const seen = new Set()
+  const pushCandidate = (candidate) => {
+    const normalizedUrl = decodeEscapedUrl(candidate?.url || '').trim()
+    if (!normalizedUrl || seen.has(normalizedUrl)) return
+    seen.add(normalizedUrl)
+    const kind = /\.m3u8(\?|$)/i.test(normalizedUrl) ? 'hls' : 'mp4'
+    const next = {
+      url: normalizedUrl,
+      source: candidate?.source || 'unknown',
+      contentType: candidate?.contentType || '',
+      contentLength: Number(candidate?.contentLength || 0) || 0,
+      kind,
     }
+    next.score = scoreVideoCandidate(next)
+    candidates.push(next)
   }
 
-  // Extract image from og:image meta tag
-  let imageUrl = null
-  const ogImageMatch = html.match(/<meta\s+property="og:image"\s+content="([^"]+)"/i)
-    || html.match(/<meta\s+content="([^"]+)"\s+property="og:image"/i)
-  if (ogImageMatch) {
-    imageUrl = ogImageMatch[1].replace(/&amp;/g, '&')
-  }
+  page.on('response', async (res) => {
+    try {
+      const responseUrl = res.url()
+      const headers = res.headers()
+      const ct = headers['content-type'] || ''
+      const len = Number(headers['content-length'] || 0) || 0
+      const looksVideo =
+        ct.startsWith('video/') ||
+        ct.includes('mpegurl') ||
+        /\.mp4(\?|$)/i.test(responseUrl) ||
+        /\.m3u8(\?|$)/i.test(responseUrl)
+      if (!looksVideo) return
+      pushCandidate({ url: responseUrl, source: 'network', contentType: ct, contentLength: len })
+    } catch { /* ignore */ }
+  })
 
-  // Extract title
-  let title = null
-  const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i)
-  if (titleMatch) title = titleMatch[1].trim()
-  const ogTitleMatch = html.match(/<meta\s+property="og:title"\s+content="([^"]+)"/i)
-    || html.match(/<meta\s+content="([^"]+)"\s+property="og:title"/i)
-  if (ogTitleMatch) title = ogTitleMatch[1].replace(/&amp;/g, '&')
+  try {
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+    await page.waitForTimeout(2_000)
 
-  // Extract description as ad copy
-  let adCopy = null
-  const descMatch = html.match(/<meta\s+property="og:description"\s+content="([^"]+)"/i)
-    || html.match(/<meta\s+content="([^"]+)"\s+property="og:description"/i)
-  if (descMatch) adCopy = descMatch[1].replace(/&amp;/g, '&')
+    // Try clicking video to trigger loading
+    const video = page.locator('video').first()
+    if ((await video.count()) > 0) {
+      await video.click({ timeout: 2_000 }).catch(() => {})
+    }
+    await page.mouse.wheel(0, 600)
+    await page.waitForTimeout(5_000)
 
-  const mediaType = videoUrl ? 'video' : imageUrl ? 'image' : null
-  return {
-    videoUrl,
-    imageUrl,
-    title,
-    adCopy,
-    headline: null,
-    cta: null,
-    mediaType,
-    requestHeaders: { 'user-agent': FB_USER_AGENT, referer: url },
+    // Collect video from DOM
+    const domSources = await page.$$eval('video', (nodes) => {
+      const urls = []
+      for (const node of nodes) {
+        if (node.currentSrc) urls.push(node.currentSrc)
+        if (node.src) urls.push(node.src)
+        for (const child of node.querySelectorAll('source')) {
+          if (child.src) urls.push(child.src)
+        }
+      }
+      return Array.from(new Set(urls.filter(Boolean)))
+    })
+    for (const src of domSources) pushCandidate({ url: src, source: 'dom' })
+
+    // HTML regex for video URLs
+    const html = await page.content()
+    const urlMatches = html.match(/https?:\/\/[^"'\\\s>]+(\.mp4|\.m3u8)[^"'\\\s>]*/gi) || []
+    for (const match of urlMatches) pushCandidate({ url: match, source: 'html' })
+
+    const encodedMatches =
+      html.match(/"(playable_url_quality_hd|playable_url|browser_native_sd_url|browser_native_hd_url)"\s*:\s*"([^"]+)"/gi) || []
+    for (const match of encodedMatches) {
+      const parsed = match.match(/"(playable_url_quality_hd|playable_url|browser_native_sd_url|browser_native_hd_url)"\s*:\s*"([^"]+)"/i)
+      if (parsed) pushCandidate({ url: parsed[2], source: parsed[1] })
+    }
+
+    candidates.sort((a, b) => b.score - a.score)
+    const bestVideo = candidates[0] || null
+
+    // If no video found, extract the post image
+    let imageUrl = null
+    if (!bestVideo) {
+      imageUrl = await page.evaluate(() => {
+        // Look for post content images — skip profile pics, icons, UI chrome
+        const imgs = Array.from(document.querySelectorAll('img'))
+        const scored = imgs
+          .filter((img) => {
+            const w = img.naturalWidth || img.width || 0
+            const h = img.naturalHeight || img.height || 0
+            const src = img.src || ''
+            if (w < 300 || h < 200) return false
+            // Skip Facebook UI images
+            if (src.includes('rsrc.php')) return false
+            if (src.includes('/static/')) return false
+            if (src.includes('emoji')) return false
+            if (img.closest('header, nav, [role="banner"]')) return false
+            // Profile pics are typically small and circular
+            if (img.getAttribute('alt')?.includes('profile')) return false
+            return true
+          })
+          .map((img) => ({
+            src: img.src,
+            area: (img.naturalWidth || img.width) * (img.naturalHeight || img.height),
+          }))
+          .sort((a, b) => b.area - a.area)
+        return scored[0]?.src || null
+      }).catch(() => null)
+    }
+
+    // Extract post text
+    const postContent = await page.evaluate(() => {
+      // Facebook post text is typically in the main content area
+      const selectors = [
+        'div[data-ad-preview="message"]',
+        'div[data-testid="post_message"]',
+        'div[dir="auto"]',
+      ]
+      for (const sel of selectors) {
+        const els = document.querySelectorAll(sel)
+        const texts = Array.from(els)
+          .map((el) => (el.textContent || '').trim())
+          .filter((t) => t.length > 20)
+          .sort((a, b) => b.length - a.length)
+        if (texts.length > 0) return texts[0]
+      }
+      return null
+    }).catch(() => null)
+
+    const title = await page.title().catch(() => null)
+    const cookieHeader = (await page.context().cookies())
+      .map((c) => `${c.name}=${c.value}`)
+      .join('; ')
+
+    const mediaType = bestVideo ? 'video' : imageUrl ? 'image' : null
+
+    return {
+      videoUrl: bestVideo?.url || null,
+      imageUrl,
+      kind: bestVideo?.kind || null,
+      title,
+      adCopy: postContent,
+      headline: null,
+      cta: null,
+      mediaType,
+      requestHeaders: {
+        'user-agent': FB_USER_AGENT,
+        referer: url,
+        ...(cookieHeader ? { cookie: cookieHeader } : {}),
+      },
+      meta: { candidate_count: candidates.length, selected_source: bestVideo?.source || null },
+    }
+  } finally {
+    await page.close().catch(() => {})
+    await browser.close().catch(() => {})
   }
 }
 
@@ -637,24 +744,60 @@ async function scrapeMetaAdVideo(url) {
       return { adCopy, headline, cta, mediaType }
     }).catch(() => ({ adCopy: null, headline: null, cta: null, mediaType: 'video' }))
 
-    // If no video found and media type is image, extract the ad image
+    // If no video found and media type is image, extract the ad creative image
     let imageUrl = null
     if (!best && adContent.mediaType === 'image') {
       imageUrl = await page.evaluate(() => {
-        const imgs = Array.from(document.querySelectorAll('img'))
-        // Filter out tiny icons/logos, find the largest content image
-        const scored = imgs
+        // Target the ad creative container — Ad Library renders the ad preview
+        // inside specific containers. Try multiple selectors.
+        const adContainerSelectors = [
+          'div._8o0a img',           // Ad preview carousel/image container
+          'div._7jyr img',           // Ad body container image
+          'div[data-testid="ad_creative"] img',
+          'div._8jh1 img',           // Ad card image
+          'div[class*="x1cy8zhl"] img',
+        ]
+
+        for (const sel of adContainerSelectors) {
+          const imgs = Array.from(document.querySelectorAll(sel))
+          const valid = imgs
+            .filter((img) => {
+              const w = img.naturalWidth || img.width || 0
+              const h = img.naturalHeight || img.height || 0
+              // Must be a real content image, not an icon
+              return w > 200 && h > 200 && img.src && !img.src.includes('emoji')
+            })
+            .sort((a, b) => {
+              const aArea = (a.naturalWidth || a.width) * (a.naturalHeight || a.height)
+              const bArea = (b.naturalWidth || b.width) * (b.naturalHeight || b.height)
+              return bArea - aArea
+            })
+          if (valid.length > 0) return valid[0].src
+        }
+
+        // Fallback: find largest image that looks like ad content
+        // Exclude Facebook UI images (profile pics, icons, logos)
+        const allImgs = Array.from(document.querySelectorAll('img'))
+        const candidates = allImgs
           .filter((img) => {
             const w = img.naturalWidth || img.width || 0
             const h = img.naturalHeight || img.height || 0
-            return w > 200 && h > 200
+            const src = img.src || ''
+            if (w < 300 || h < 200) return false
+            // Exclude common FB chrome patterns
+            if (src.includes('rsrc.php')) return false
+            if (src.includes('profile')) return false
+            if (src.includes('emoji')) return false
+            if (src.includes('/static/')) return false
+            if (img.closest('header, nav, [role="banner"]')) return false
+            return true
           })
           .map((img) => ({
             src: img.src,
             area: (img.naturalWidth || img.width) * (img.naturalHeight || img.height),
           }))
           .sort((a, b) => b.area - a.area)
-        return scored[0]?.src || null
+        return candidates[0]?.src || null
       }).catch(() => null)
     }
 

@@ -2053,15 +2053,7 @@ export default function GeneratePage() {
                 streamedText += delta
                 fallbackAssistantMessage = streamedText
                 if (streamDraftToCanvas) {
-                  const liveDraftBody = extractLiveDraftBody(streamedText, fullMessage)
-                  const fallbackBody =
-                    requestedVersions.length === 1 ? normalizeLooseDraftBody(streamedText) : null
-                  const draftLikeBody =
-                    liveDraftBody && liveDraftBody.trim()
-                      ? liveDraftBody
-                      : fallbackBody && fallbackBody.trim()
-                        ? fallbackBody
-                        : null
+                  const draftLikeBody = extractLiveDraftBody(streamedText, fullMessage)
 
                   if (draftLikeBody) {
                     const split = splitDraftVersions(draftLikeBody, versions)

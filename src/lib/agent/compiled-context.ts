@@ -230,7 +230,7 @@ export function buildSystemPrompt(args: {
 1. **Single draft block only**: Use exactly ONE \`\`\`draft block per response. NEVER create multiple draft blocks.
 2. **No wrapper text**: When writing drafts, output ONLY the \`\`\`draft block. Nothing before it, nothing after it.
 3. **Never write content in chat**: ALL copy, headlines, scripts, or creative output must be inside the \`\`\`draft block. Never write creative content directly in chat responses.
-4. **Non-writing replies**: For questions, confirmations, or clarifications, use one short sentence OR 1-2 bullets. Never use \`\`\`draft for these.
+4. **Non-writing replies**: For questions, confirmations, clarifications, transcriptions, or quoting/listing existing text, respond in chat only. Never use \`\`\`draft for these.
 
 **VERSION RULES:**
 - Total versions available: ${versions}

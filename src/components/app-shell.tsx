@@ -22,6 +22,7 @@ interface AppContextType {
   user: AuthUser | null
   signOut: () => Promise<void>
   openContextDrawer: () => void
+  refreshProducts: () => void
   setContextDrawerExtra: (extra: ReactNode | null) => void
   setTopBarExtra: (extra: ReactNode | null) => void
 }
@@ -158,6 +159,14 @@ export function AppShell({ children }: { children: ReactNode }) {
       })
   }, [selectedOrg])
 
+  // Refresh product list without changing selection (for use after create/update/delete)
+  const refreshProducts = () => {
+    if (!selectedBrand) return
+    fetch(`/api/products?brand_id=${selectedBrand}`)
+      .then(r => r.json())
+      .then(data => setProducts(data))
+  }
+
   // Fetch products when brand changes
   useEffect(() => {
     if (!selectedBrand) {
@@ -225,6 +234,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         setSelectedOrg,
         setSelectedBrand,
       setSelectedProduct,
+      refreshProducts,
       loading,
       user,
       signOut,
@@ -582,25 +592,6 @@ function FilmIcon() {
         stroke="currentColor"
         strokeWidth="1.8"
         strokeLinecap="round"
-      />
-    </svg>
-  )
-}
-
-function ClockIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5" aria-hidden="true">
-      <path
-        d="M12 21a9 9 0 110-18 9 9 0 010 18z"
-        stroke="currentColor"
-        strokeWidth="1.8"
-      />
-      <path
-        d="M12 7v6l4 2"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-        strokeLinejoin="round"
       />
     </svg>
   )

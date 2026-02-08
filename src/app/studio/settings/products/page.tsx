@@ -12,7 +12,7 @@ interface Product {
 }
 
 export default function ProductsPage() {
-  const { selectedBrand, setSelectedProduct } = useAppContext()
+  const { selectedBrand, setSelectedProduct, refreshProducts } = useAppContext()
   const [products, setProducts] = useState<Product[]>([])
   const [creating, setCreating] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -65,6 +65,7 @@ export default function ProductsPage() {
         setCreating(false)
         resetForm()
         setSelectedProduct(data.id)
+        refreshProducts()
       } else {
         console.error('Failed to create product:', data)
         alert(`Failed to create product: ${data.error || 'Unknown error'}`)
@@ -95,6 +96,7 @@ export default function ProductsPage() {
       setProducts(prev => prev.map(p => p.id === editingId ? updated : p))
       setEditingId(null)
       resetForm()
+      refreshProducts()
     }
     setSaving(false)
   }
@@ -103,6 +105,7 @@ export default function ProductsPage() {
     if (!confirm('Delete this product and all its avatars/pitches?')) return
     await fetch(`/api/products/${id}`, { method: 'DELETE' })
     setProducts(prev => prev.filter(p => p.id !== id))
+    refreshProducts()
   }
 
   if (!selectedBrand) {

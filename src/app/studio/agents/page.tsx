@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { DEFAULT_PROMPT_BLOCKS } from '@/lib/prompt-defaults'
+import { ResetPresetModal } from '@/components/ui/reset-preset-modal'
+import { PresetsDropdown } from '@/components/ui/presets-dropdown'
 
 type PromptBlock = {
   id: string
@@ -145,6 +147,8 @@ export default function AgentsPage() {
   const [dirtyKeys, setDirtyKeys] = useState<Record<string, boolean>>({})
   const [saving, setSaving] = useState<Record<string, boolean>>({})
   const [messages, setMessages] = useState<Record<string, string | null>>({})
+  const [resetTarget, setResetTarget] = useState<string | null>(null)
+  const [resetting, setResetting] = useState(false)
 
   async function loadBlocks() {
     setLoading(true)
@@ -226,21 +230,32 @@ export default function AgentsPage() {
     }
   }
 
-  async function resetBlock(key: string) {
-    const existing = getBlockForKey(key)
+  async function handleResetConfirm(presetName: string | null) {
+    if (!resetTarget) return
+    const existing = getBlockForKey(resetTarget)
     if (!existing) return
-    if (!confirm('Reset this prompt to default?')) return
+    setResetting(true)
 
     try {
-      const res = await fetch(`/api/prompt-blocks/${existing.id}`, { method: 'DELETE' })
+      const res = await fetch(`/api/prompt-blocks/${existing.id}/reset`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ preset_name: presetName }),
+      })
       const data = await res.json()
       if (!res.ok) throw new Error(data?.error || 'Failed to reset')
       await loadBlocks()
-      setDirtyKeys((prev) => ({ ...prev, [key]: false }))
-      setDrafts((prev) => ({ ...prev, [key]: getDefaultContent(key) }))
-      setMessages((prev) => ({ ...prev, [key]: 'Reset to default.' }))
+      setDirtyKeys((prev) => ({ ...prev, [resetTarget]: false }))
+      setDrafts((prev) => ({ ...prev, [resetTarget]: getDefaultContent(resetTarget) }))
+      setMessages((prev) => ({ ...prev, [resetTarget]: 'Reset to default.' }))
     } catch (err) {
-      setMessages((prev) => ({ ...prev, [key]: err instanceof Error ? err.message : 'Failed to reset' }))
+      setMessages((prev) => ({
+        ...prev,
+        [resetTarget]: err instanceof Error ? err.message : 'Failed to reset',
+      }))
+    } finally {
+      setResetting(false)
+      setResetTarget(null)
     }
   }
 
@@ -307,6 +322,14 @@ export default function AgentsPage() {
                       {overridden && (
                         <span className="chat-chip chat-chip--muted">Customized</span>
                       )}
+                      <PresetsDropdown
+                        metadataKey={block.key}
+                        scope="global"
+                        onRestore={(content) => {
+                          setDrafts((prev) => ({ ...prev, [block.key]: content }))
+                          setDirtyKeys((prev) => ({ ...prev, [block.key]: true }))
+                        }}
+                      />
                       <button
                         onClick={() => saveBlock(block.key)}
                         disabled={saving[block.key]}
@@ -316,7 +339,7 @@ export default function AgentsPage() {
                       </button>
                       {overridden && (
                         <button
-                          onClick={() => resetBlock(block.key)}
+                          onClick={() => setResetTarget(block.key)}
                           className="editor-button-ghost text-xs"
                         >
                           Reset
@@ -346,6 +369,18 @@ export default function AgentsPage() {
           )}
         </div>
       </div>
+
+      <ResetPresetModal
+        open={resetTarget !== null}
+        blockLabel={
+          resetTarget
+            ? activeAgent.blocks.find((b) => b.key === resetTarget)?.label || resetTarget
+            : ''
+        }
+        onReset={handleResetConfirm}
+        onCancel={() => setResetTarget(null)}
+        busy={resetting}
+      />
     </div>
   )
 }

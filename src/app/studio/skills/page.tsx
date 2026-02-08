@@ -4,6 +4,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { CONTENT_TYPES } from '@/lib/content-types'
 import { DEFAULT_PROMPT_BLOCKS } from '@/lib/prompt-defaults'
 import { useAppContext } from '@/components/app-shell'
+import { ResetPresetModal } from '@/components/ui/reset-preset-modal'
+import { PresetsDropdown } from '@/components/ui/presets-dropdown'
 
 type PromptBlock = {
   id: string
@@ -56,6 +58,8 @@ export default function SkillsPage() {
   const [creating, setCreating] = useState(false)
   const [newName, setNewName] = useState('')
   const [newDescription, setNewDescription] = useState('')
+  const [resetOpen, setResetOpen] = useState(false)
+  const [resetting, setResetting] = useState(false)
 
   useEffect(() => {
     loadBlocks()
@@ -182,13 +186,17 @@ export default function SkillsPage() {
     }
   }
 
-  async function resetActiveBlock() {
+  async function handleResetConfirm(presetName: string | null) {
     if (!activeKey) return
     const block = getBlockForKey(activeKey)
     if (!block) return
-    if (!confirm('Reset this prompt to default?')) return
+    setResetting(true)
     try {
-      const res = await fetch(`/api/prompt-blocks/${block.id}`, { method: 'DELETE' })
+      const res = await fetch(`/api/prompt-blocks/${block.id}/reset`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ preset_name: presetName }),
+      })
       const data = await res.json()
       if (!res.ok) throw new Error(data?.error || 'Failed to reset')
       await loadBlocks()
@@ -197,6 +205,9 @@ export default function SkillsPage() {
       setMessage('Reset to default.')
     } catch (err) {
       setMessage(err instanceof Error ? err.message : 'Failed to reset')
+    } finally {
+      setResetting(false)
+      setResetOpen(false)
     }
   }
 
@@ -412,6 +423,13 @@ export default function SkillsPage() {
           <div className="flex items-center gap-2">
             {!creating && (
               <>
+                {activeKey && (
+                  <PresetsDropdown
+                    metadataKey={activeKey}
+                    scope="global"
+                    onRestore={(content) => setEditContent(content)}
+                  />
+                )}
                 <button
                   onClick={saveBlock}
                   disabled={saving}
@@ -419,8 +437,8 @@ export default function SkillsPage() {
                 >
                   {saving ? 'Saving...' : 'Save'}
                 </button>
-                {activeBlock && !isCustomSkill && (
-                  <button onClick={resetActiveBlock} className="editor-button-ghost text-xs">
+                {activeBlock && !isCustomSkill && !isCustomRule && (
+                  <button onClick={() => setResetOpen(true)} className="editor-button-ghost text-xs">
                     Reset
                   </button>
                 )}
@@ -494,6 +512,14 @@ export default function SkillsPage() {
           )}
         </div>
       </div>
+
+      <ResetPresetModal
+        open={resetOpen}
+        blockLabel={activeMeta?.label || activeKey || ''}
+        onReset={handleResetConfirm}
+        onCancel={() => setResetOpen(false)}
+        busy={resetting}
+      />
     </div>
   )
 }

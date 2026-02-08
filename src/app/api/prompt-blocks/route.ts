@@ -12,6 +12,8 @@ export async function GET(request: NextRequest) {
     const scopeId = searchParams.get('scope_id')
     const activeOnly = searchParams.get('active_only') !== 'false' // Default true
     const userOverride = searchParams.get('user_override') === 'true'
+    const includeHistory = searchParams.get('include_history') === 'true'
+    const metadataKey = searchParams.get('metadata_key') || null
 
     // When user_override is requested, fetch user-scoped blocks and merge
     let userId: string | null = null
@@ -26,6 +28,7 @@ export async function GET(request: NextRequest) {
       WHERE (${type}::text IS NULL OR type = ${type})
         AND (${scope}::text IS NULL OR scope = ${scope})
         AND (${scopeId}::text IS NULL OR scope_id = ${scopeId})
+        AND (${metadataKey}::text IS NULL OR (metadata->>'key') = ${metadataKey})
         AND (
           CASE
             WHEN ${!userOverride} THEN user_id IS NULL
@@ -52,7 +55,7 @@ export async function GET(request: NextRequest) {
       return metadataKey || String(row?.type || '')
     }
 
-    if (activeOnly) {
+    if (activeOnly && !includeHistory) {
       const seen = new Set<string>()
       const deduped: any[] = []
       for (const row of rows as any[]) {

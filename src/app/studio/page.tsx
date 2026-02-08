@@ -2053,35 +2053,37 @@ export default function GeneratePage() {
                 sawFirstDelta = true
                 streamedText += delta
                 fallbackAssistantMessage = streamedText
-                if (streamDraftToCanvas) {
-                  const draftLikeBody = extractLiveDraftBody(streamedText, fullMessage)
+                // Try to extract draft content — complete ```draft...``` or partial ```draft\n...
+                const completeDraft = extractLiveDraftBody(streamedText, fullMessage)
+                const partialMatch = !completeDraft ? streamedText.match(/```draft\s*\n([\s\S]+)$/i) : null
+                const draftLikeBody = completeDraft || (partialMatch ? partialMatch[1].trim() : null)
 
-                  if (draftLikeBody) {
-                    const split = splitDraftVersions(draftLikeBody, versions)
-                    const nextTabs = mergeDraftIntoRequestedVersions({
-                      currentTabs: canvasRef.current,
-                      draft: draftLikeBody,
-                      split,
-                      requestedVersions,
-                      versions,
-                    })
-                    if (!areTabsEqual(canvasRef.current, nextTabs)) {
-                      setCanvasTabs(nextTabs)
-                      canvasUpdatedFromStream = true
-                      draftAppliedToCanvas = true
-                    }
-                    // Only auto-switch tab once at the start of streaming, not on every delta
-                    if (!tabAutoSwitchedDuringStream) {
-                      if (requestedVersions.length === 1) {
-                        setActiveTab(Math.max(0, requestedVersions[0] - 1))
-                      } else {
-                        const firstFilled = nextTabs.findIndex((tab) => tab.trim().length > 0)
-                        if (firstFilled >= 0) setActiveTab(firstFilled)
-                      }
-                      tabAutoSwitchedDuringStream = true
-                    }
+                if (draftLikeBody) {
+                  const split = splitDraftVersions(draftLikeBody, versions)
+                  const nextTabs = mergeDraftIntoRequestedVersions({
+                    currentTabs: canvasRef.current,
+                    draft: draftLikeBody,
+                    split,
+                    requestedVersions,
+                    versions,
+                  })
+                  if (!areTabsEqual(canvasRef.current, nextTabs)) {
+                    setCanvasTabs(nextTabs)
+                    canvasUpdatedFromStream = true
+                    draftAppliedToCanvas = true
                   }
-                } else {
+                  // Only auto-switch tab once at the start of streaming, not on every delta
+                  if (!tabAutoSwitchedDuringStream) {
+                    if (requestedVersions.length === 1) {
+                      setActiveTab(Math.max(0, requestedVersions[0] - 1))
+                    } else {
+                      const firstFilled = nextTabs.findIndex((tab) => tab.trim().length > 0)
+                      if (firstFilled >= 0) setActiveTab(firstFilled)
+                    }
+                    tabAutoSwitchedDuringStream = true
+                  }
+                }
+                if (!draftAppliedToCanvas && !canvasUpdatedFromStream) {
                   setMessages((prev) =>
                     prev.map((message) =>
                       message.id === pendingAssistantId

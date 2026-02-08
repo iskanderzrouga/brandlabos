@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
 import { createAssetSchema } from '@/lib/validations'
+import { requireAuth } from '@/lib/require-auth'
 
 // GET /api/assets - List assets (filtered by generation run)
 export async function GET(request: NextRequest) {
   try {
+    const user = await requireAuth()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     const { searchParams } = new URL(request.url)
     const generationRunId = searchParams.get('generation_run_id')
     const type = searchParams.get('type')
@@ -36,6 +39,8 @@ export async function GET(request: NextRequest) {
 // POST /api/assets - Create a new asset
 export async function POST(request: NextRequest) {
   try {
+    const user = await requireAuth()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     const body = await request.json()
     const validated = createAssetSchema.safeParse(body)
 
@@ -75,6 +80,8 @@ export async function POST(request: NextRequest) {
 // POST /api/assets/bulk - Create multiple assets at once
 export async function PUT(request: NextRequest) {
   try {
+    const user = await requireAuth()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     const body = await request.json()
 
     if (!Array.isArray(body.assets)) {

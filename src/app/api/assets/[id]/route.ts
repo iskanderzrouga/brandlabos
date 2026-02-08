@@ -1,12 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
 import type { Json } from '@/types/database'
+import { requireAuth } from '@/lib/require-auth'
 
 type Params = { params: Promise<{ id: string }> }
 
 // GET /api/assets/[id] - Get single asset
 export async function GET(request: NextRequest, { params }: Params) {
   try {
+    const user = await requireAuth()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     const { id } = await params
     const rows = await sql`
       SELECT
@@ -35,6 +38,8 @@ export async function GET(request: NextRequest, { params }: Params) {
 // PATCH /api/assets/[id] - Update asset content or metadata
 export async function PATCH(request: NextRequest, { params }: Params) {
   try {
+    const user = await requireAuth()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     const { id } = await params
     const body = await request.json()
 
@@ -76,6 +81,8 @@ export async function PATCH(request: NextRequest, { params }: Params) {
 // DELETE /api/assets/[id] - Delete asset
 export async function DELETE(request: NextRequest, { params }: Params) {
   try {
+    const user = await requireAuth()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     const { id } = await params
     const rows = await sql`
       DELETE FROM assets

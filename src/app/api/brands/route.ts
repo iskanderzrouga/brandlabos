@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
 import { createBrandSchema } from '@/lib/validations'
+import { requireAuth } from '@/lib/require-auth'
 
 // GET /api/brands - List all brands (optionally filtered by organization)
 export async function GET(request: NextRequest) {
   try {
+    const user = await requireAuth()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     const { searchParams } = new URL(request.url)
     const organizationId = searchParams.get('organization_id')
 
@@ -36,6 +39,8 @@ export async function GET(request: NextRequest) {
 // POST /api/brands - Create a new brand
 export async function POST(request: NextRequest) {
   try {
+    const user = await requireAuth()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     const body = await request.json()
     const validated = createBrandSchema.safeParse(body)
 

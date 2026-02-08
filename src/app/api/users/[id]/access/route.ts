@@ -1,11 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
+import { requireAuth } from '@/lib/require-auth'
 
 type Params = { params: Promise<{ id: string }> }
 
 // POST /api/users/[id]/access - Add access (org or brand level)
 export async function POST(request: NextRequest, { params }: Params) {
   try {
+    const user = await requireAuth()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (user.role !== 'super_admin') return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     const { id: userId } = await params
     const body = await request.json()
     const { type, organization_id } = body
@@ -42,6 +46,9 @@ export async function POST(request: NextRequest, { params }: Params) {
 // DELETE /api/users/[id]/access - Remove access
 export async function DELETE(request: NextRequest, { params }: Params) {
   try {
+    const user = await requireAuth()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (user.role !== 'super_admin') return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     const { id: userId } = await params
     const { searchParams } = new URL(request.url)
     const type = searchParams.get('type')

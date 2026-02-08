@@ -1,9 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { promptAssembler } from '@/lib/services/prompt-assembler'
+import { requireAuth } from '@/lib/require-auth'
 
 // POST /api/assemble-prompt - Get the assembled prompt for preview
 export async function POST(request: NextRequest) {
   try {
+    const user = await requireAuth()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     const body = await request.json()
     const { product_id, avatar_ids, pitch_id, content_type, user_instructions } = body
 

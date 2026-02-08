@@ -1,11 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
+import { requireAuth } from '@/lib/require-auth'
 
 const anthropic = new Anthropic()
 
 // POST /api/edit-content - Edit a specific piece of text with AI
 export async function POST(request: NextRequest) {
   try {
+    const user = await requireAuth()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     const body = await request.json()
     const { original_text, edit_instruction, context } = body
 

@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
 import { createOrganizationSchema } from '@/lib/validations'
+import { requireAuth } from '@/lib/require-auth'
 
 // GET /api/organizations - List all organizations
 export async function GET() {
   try {
+    const user = await requireAuth()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     const rows = await sql`
       SELECT *
       FROM organizations
@@ -23,6 +26,8 @@ export async function GET() {
 // POST /api/organizations - Create a new organization
 export async function POST(request: NextRequest) {
   try {
+    const user = await requireAuth()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     const body = await request.json()
     const validated = createOrganizationSchema.safeParse(body)
 

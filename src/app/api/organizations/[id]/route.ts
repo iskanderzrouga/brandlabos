@@ -1,12 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
 import { updateOrganizationSchema } from '@/lib/validations'
+import { requireAuth } from '@/lib/require-auth'
 
 type Params = { params: Promise<{ id: string }> }
 
 // GET /api/organizations/[id] - Get single organization
 export async function GET(request: NextRequest, { params }: Params) {
   try {
+    const user = await requireAuth()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     const { id } = await params
     const rows = await sql`
       SELECT *
@@ -28,6 +31,8 @@ export async function GET(request: NextRequest, { params }: Params) {
 // PATCH /api/organizations/[id] - Update organization
 export async function PATCH(request: NextRequest, { params }: Params) {
   try {
+    const user = await requireAuth()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     const { id } = await params
     const body = await request.json()
     const validated = updateOrganizationSchema.safeParse(body)
@@ -65,6 +70,8 @@ export async function PATCH(request: NextRequest, { params }: Params) {
 // DELETE /api/organizations/[id] - Delete organization
 export async function DELETE(request: NextRequest, { params }: Params) {
   try {
+    const user = await requireAuth()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     const { id } = await params
     const rows = await sql`
       DELETE FROM organizations

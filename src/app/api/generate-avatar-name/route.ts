@@ -2,10 +2,13 @@ import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 import { sql } from '@/lib/db'
 import { getOrgApiKey } from '@/lib/api-keys'
+import { requireAuth } from '@/lib/require-auth'
 
 // POST /api/generate-avatar-name - Generate a descriptive avatar name
 export async function POST(request: NextRequest) {
   try {
+    const user = await requireAuth()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     const body = await request.json()
     const { content, product_id } = body
 

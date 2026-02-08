@@ -3,10 +3,14 @@ import { sql } from '@/lib/db'
 import { createAppUserSchema } from '@/lib/validations'
 import { hashPassword } from '@/lib/passwords'
 import crypto from 'crypto'
+import { requireAuth } from '@/lib/require-auth'
 
 // GET /api/users - List all users with their access info
 export async function GET() {
   try {
+    const user = await requireAuth()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (user.role !== 'super_admin') return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     const users = await sql`
       SELECT id, email, name, role, is_active, created_at, updated_at
       FROM app_users
@@ -50,6 +54,9 @@ export async function GET() {
 // POST /api/users - Create a new user (admin only)
 export async function POST(request: NextRequest) {
   try {
+    const user = await requireAuth()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (user.role !== 'super_admin') return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     const body = await request.json()
     const validated = createAppUserSchema.safeParse(body)
 

@@ -3,6 +3,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { promptAssembler } from '@/lib/services/prompt-assembler'
 import { sql } from '@/lib/db'
 import { getOrgApiKey } from '@/lib/api-keys'
+import { requireAuth } from '@/lib/require-auth'
 
 const AGENT_MODEL = 'claude-opus-4-6'
 
@@ -42,6 +43,9 @@ interface GenerationResponse {
 
 export async function POST(request: NextRequest) {
   try {
+    const user = await requireAuth()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
     const body: GenerateRequest = await request.json()
 
     if (!body.product_id || !body.avatar_ids?.length) {
@@ -120,7 +124,6 @@ export async function POST(request: NextRequest) {
     try {
       // Convert frontend content type to database enum value
       const dbFeatureType = contentTypeToDbEnum[body.content_type || 'organic_static'] || 'static_organic_ads'
-      console.log('Attempting to save generation run for product:', body.product_id, 'feature_type:', dbFeatureType)
 
       const rows = await sql`
         INSERT INTO generation_runs (
@@ -152,8 +155,6 @@ export async function POST(request: NextRequest) {
       run = rows[0] ?? null
       if (!run) {
         saveError = 'Failed to save generation run'
-      } else {
-        console.log('Generation run saved successfully:', run?.id)
       }
     } catch (dbError) {
       console.error('Database error saving generation run:', dbError)

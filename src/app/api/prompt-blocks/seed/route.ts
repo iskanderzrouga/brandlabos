@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { sql } from '@/lib/db'
 import { DEFAULT_PROMPT_BLOCKS } from '@/lib/prompt-defaults'
+import { requireAuth } from '@/lib/require-auth'
 
 // Map our default block keys to proper database types
 const BLOCK_TYPE_MAP: Record<string, string> = {
@@ -21,6 +22,8 @@ const BLOCK_TYPE_MAP: Record<string, string> = {
 // POST /api/prompt-blocks/seed - Seed default prompt blocks
 export async function POST() {
   try {
+    const user = await requireAuth()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     const countRows = await sql`SELECT COUNT(*)::int AS count FROM prompt_blocks`
     const count = countRows[0]?.count ?? 0
 
@@ -80,6 +83,8 @@ export async function POST() {
 // GET /api/prompt-blocks/seed - Re-seed missing blocks without overwriting existing
 export async function GET() {
   try {
+    const user = await requireAuth()
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     const existingBlocks = await sql`
       SELECT metadata
       FROM prompt_blocks

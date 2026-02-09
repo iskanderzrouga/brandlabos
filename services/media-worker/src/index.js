@@ -298,6 +298,12 @@ function classifySwipeUrl(url) {
 const FB_USER_AGENT =
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
 
+const FB_MOBILE_USER_AGENT =
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1'
+
+const FB_VIDEO_JSON_KEYS =
+  /(playable_url_quality_hd|playable_url|browser_native_hd_url|browser_native_sd_url|hd_src|sd_src)/
+
 async function scrapeFacebookPost(url) {
   log('Scraping Facebook post via Playwright...', url)
   const browser = await chromium.launch({
@@ -350,6 +356,26 @@ async function scrapeFacebookPost(url) {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60_000 })
     await page.waitForTimeout(2_000)
 
+    // Dismiss Facebook login overlay
+    await page.evaluate(() => {
+      document.querySelectorAll('[role="dialog"]').forEach((el) => el.remove())
+      document.querySelectorAll('[data-testid="cookie-policy-manage-dialog"]').forEach((el) => el.remove())
+      for (const el of document.querySelectorAll('div')) {
+        const style = window.getComputedStyle(el)
+        if (style.position !== 'fixed' && style.position !== 'absolute') continue
+        if (style.zIndex && Number(style.zIndex) < 10) continue
+        const text = el.textContent || ''
+        if (
+          el.querySelector('[type="password"], [name="email"], [name="login"]') ||
+          (text.includes('Log in') && text.includes('Sign up') && el.offsetHeight > 200)
+        ) {
+          el.remove()
+        }
+      }
+    }).catch(() => {})
+    await page.locator('[aria-label="Close"]').first().click({ timeout: 1500 }).catch(() => {})
+    await page.waitForTimeout(500)
+
     // Try clicking video to trigger loading
     const video = page.locator('video').first()
     if ((await video.count()) > 0) {
@@ -377,12 +403,17 @@ async function scrapeFacebookPost(url) {
     const urlMatches = html.match(/https?:\/\/[^"'\\\s>]+(\.mp4|\.m3u8)[^"'\\\s>]*/gi) || []
     for (const match of urlMatches) pushCandidate({ url: match, source: 'html' })
 
+    // JSON keys Facebook uses for video URLs
     const encodedMatches =
-      html.match(/"(playable_url_quality_hd|playable_url|browser_native_sd_url|browser_native_hd_url)"\s*:\s*"([^"]+)"/gi) || []
+      html.match(new RegExp(`"(${FB_VIDEO_JSON_KEYS.source})"\\s*:\\s*"([^"]+)"`, 'gi')) || []
     for (const match of encodedMatches) {
-      const parsed = match.match(/"(playable_url_quality_hd|playable_url|browser_native_sd_url|browser_native_hd_url)"\s*:\s*"([^"]+)"/i)
+      const parsed = match.match(new RegExp(`"(${FB_VIDEO_JSON_KEYS.source})"\\s*:\\s*"([^"]+)"`, 'i'))
       if (parsed) pushCandidate({ url: parsed[2], source: parsed[1] })
     }
+
+    // Broader search — Facebook CDN video URLs
+    const fbcdnMatches = html.match(/https?:\/\/video[^"'\\\s>]*?fbcdn\.net\/[^"'\\\s>]+/gi) || []
+    for (const match of fbcdnMatches) pushCandidate({ url: match, source: 'fbcdn' })
 
     candidates.sort((a, b) => b.score - a.score)
     const bestVideo = candidates[0] || null
@@ -467,14 +498,26 @@ async function scrapeFacebookPost(url) {
 
 async function scrapeFacebookReel(url) {
   log('Scraping Facebook reel via Playwright...', url)
+
+  // Try desktop first, then mobile fallback
+  const result = await _scrapeFacebookReelAttempt(url, FB_USER_AGENT, { width: 1360, height: 768 })
+  if (result.videoUrl || result.imageUrl) return result
+
+  // Mobile fallback — rewrite to m.facebook.com with mobile UA
+  const mobileUrl = url.replace(/\/\/(?:www\.)?facebook\.com/, '//m.facebook.com')
+  log('Desktop found nothing, retrying with mobile...', mobileUrl)
+  return _scrapeFacebookReelAttempt(mobileUrl, FB_MOBILE_USER_AGENT, { width: 390, height: 844 })
+}
+
+async function _scrapeFacebookReelAttempt(url, userAgent, viewport) {
   const browser = await chromium.launch({
     headless: true,
     args: ['--no-sandbox', '--disable-dev-shm-usage'],
   })
 
   const page = await browser.newPage({
-    userAgent: FB_USER_AGENT,
-    viewport: { width: 1360, height: 768 },
+    userAgent,
+    viewport,
     locale: 'en-US',
   })
 
@@ -483,6 +526,8 @@ async function scrapeFacebookReel(url) {
   const pushCandidate = (candidate) => {
     const normalizedUrl = decodeEscapedUrl(candidate?.url || '').trim()
     if (!normalizedUrl || seen.has(normalizedUrl)) return
+    // Skip blob: URLs — they're browser-local and can't be downloaded
+    if (normalizedUrl.startsWith('blob:')) return
     seen.add(normalizedUrl)
     const kind = /\.m3u8(\?|$)/i.test(normalizedUrl) ? 'hls' : 'mp4'
     const next = {
@@ -515,6 +560,31 @@ async function scrapeFacebookReel(url) {
   try {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60_000 })
     await page.waitForTimeout(2_000)
+
+    // Dismiss Facebook login overlay — video data is often in the page already
+    await page.evaluate(() => {
+      // Remove login/signup dialogs
+      document.querySelectorAll('[role="dialog"]').forEach((el) => el.remove())
+      // Remove cookie consent banners
+      document.querySelectorAll('[data-testid="cookie-policy-manage-dialog"]').forEach((el) => el.remove())
+      // Remove fixed overlays that contain login forms
+      for (const el of document.querySelectorAll('div')) {
+        const style = window.getComputedStyle(el)
+        if (style.position !== 'fixed' && style.position !== 'absolute') continue
+        if (style.zIndex && Number(style.zIndex) < 10) continue
+        const text = el.textContent || ''
+        if (
+          el.querySelector('[type="password"], [name="email"], [name="login"]') ||
+          (text.includes('Log in') && text.includes('Sign up') && el.offsetHeight > 200)
+        ) {
+          el.remove()
+        }
+      }
+    }).catch(() => {})
+    // Also try clicking close buttons
+    await page.locator('[aria-label="Close"]').first().click({ timeout: 1500 }).catch(() => {})
+    await page.waitForTimeout(500)
+
     const video = page.locator('video').first()
     if ((await video.count()) > 0) {
       await video.click({ timeout: 2_000 }).catch(() => {})
@@ -536,24 +606,50 @@ async function scrapeFacebookReel(url) {
     })
     for (const src of domSources) pushCandidate({ url: src, source: 'dom' })
 
-    // HTML regex
+    // HTML regex — .mp4 / .m3u8 URLs
     const html = await page.content()
     const urlMatches = html.match(/https?:\/\/[^"'\\\s>]+(\.mp4|\.m3u8)[^"'\\\s>]*/gi) || []
     for (const match of urlMatches) pushCandidate({ url: match, source: 'html' })
 
+    // JSON keys Facebook uses for video URLs
     const encodedMatches =
-      html.match(/"(playable_url_quality_hd|playable_url|browser_native_sd_url)"\s*:\s*"([^"]+)"/gi) || []
+      html.match(new RegExp(`"(${FB_VIDEO_JSON_KEYS.source})"\\s*:\\s*"([^"]+)"`, 'gi')) || []
     for (const match of encodedMatches) {
-      const parsed = match.match(/"(playable_url_quality_hd|playable_url|browser_native_sd_url)"\s*:\s*"([^"]+)"/i)
+      const parsed = match.match(new RegExp(`"(${FB_VIDEO_JSON_KEYS.source})"\\s*:\\s*"([^"]+)"`, 'i'))
       if (parsed) pushCandidate({ url: parsed[2], source: parsed[1] })
     }
 
+    // Broader search — Facebook CDN video URLs (may not end in .mp4)
+    const fbcdnMatches = html.match(/https?:\/\/video[^"'\\\s>]*?fbcdn\.net\/[^"'\\\s>]+/gi) || []
+    for (const match of fbcdnMatches) pushCandidate({ url: match, source: 'fbcdn' })
+
     candidates.sort((a, b) => b.score - a.score)
     const best = candidates[0] || null
+
+    log(`Reel scrape: ${candidates.length} candidates found (best: ${best?.source || 'none'})`)
+
     const title = await page.title().catch(() => null)
     const cookieHeader = (await page.context().cookies())
       .map((c) => `${c.name}=${c.value}`)
       .join('; ')
+
+    // Extract post text for context
+    const adCopy = await page.evaluate(() => {
+      const selectors = [
+        'div[data-ad-preview="message"]',
+        'div[data-testid="post_message"]',
+        'div[dir="auto"]',
+      ]
+      for (const sel of selectors) {
+        const els = document.querySelectorAll(sel)
+        const texts = Array.from(els)
+          .map((el) => (el.textContent || '').trim())
+          .filter((t) => t.length > 20)
+          .sort((a, b) => b.length - a.length)
+        if (texts.length > 0) return texts[0]
+      }
+      return null
+    }).catch(() => null)
 
     // If no video found, try to extract an image as fallback
     let imageUrl = null
@@ -581,9 +677,12 @@ async function scrapeFacebookReel(url) {
       imageUrl,
       kind: best?.kind || null,
       title,
+      adCopy,
+      headline: null,
+      cta: null,
       mediaType: best ? 'video' : imageUrl ? 'image' : 'video',
       requestHeaders: {
-        'user-agent': FB_USER_AGENT,
+        'user-agent': userAgent,
         referer: url,
         ...(cookieHeader ? { cookie: cookieHeader } : {}),
       },

@@ -1995,6 +1995,7 @@ export default function GeneratePage() {
             message: fullMessage,
             target_versions: requestedVersions,
             compact_mode: attempt > 0,
+            canvas_content: serializeDraftTabs(canvasRef.current),
           }),
         })
 
@@ -2782,6 +2783,9 @@ export default function GeneratePage() {
                     const isTool = m.role === 'tool'
                     const messageKey = m.id || `${idx}`
                     const draftParts = m.role === 'assistant' ? splitDraftMessage(m.content) : { before: m.content, draft: null, after: '' }
+                    if (m.role === 'assistant' && draftParts.draft && !draftParts.before && !draftParts.after) {
+                      draftParts.before = 'Draft applied to canvas.'
+                    }
                     const draft = draftParts.draft
                     const draftVersionCount = draft ? countDraftVersionHeadings(draft) : 0
 

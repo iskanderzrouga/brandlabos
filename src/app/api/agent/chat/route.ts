@@ -703,6 +703,7 @@ export async function POST(request: NextRequest) {
     const threadId = String(body.thread_id || '').trim()
     const messageText = String(body.message || '').trim()
     const compactMode = Boolean(body.compact_mode)
+    const canvasContent = typeof body.canvas_content === 'string' ? body.canvas_content.trim() : ''
 
     if (!threadId || !messageText) {
       return NextResponse.json(
@@ -903,6 +904,20 @@ export async function POST(request: NextRequest) {
     )
 
     const contextMessages = contextWindow.messages
+
+    // Inject current canvas content so the AI sees the user's latest edits
+    if (canvasContent) {
+      const lastUserIdx = contextMessages.findLastIndex((m: any) => m.role === 'user')
+      if (lastUserIdx >= 0) {
+        const msg = contextMessages[lastUserIdx]
+        const existingText = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)
+        contextMessages[lastUserIdx] = {
+          ...msg,
+          content: `[Current canvas content — the user may have edited this manually]\n${canvasContent}\n\n---\n\n${existingText}`,
+        }
+      }
+    }
+
     const promptCompileMs = Date.now() - promptCompileStartedAt
     const dbLoadMs = Date.now() - dbLoadStartedAt
 

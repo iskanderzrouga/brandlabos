@@ -9,6 +9,23 @@ import {
   type ThreadContext,
 } from '@/lib/agent/compiled-context'
 
+/**
+ * Lightweight version of the chat route's summarizeDraftForContext.
+ * Replaces large ```draft blocks with a short placeholder so the preview
+ * matches the context the AI actually receives.
+ */
+function summarizeDraftForPreview(content: string): string {
+  const match = content.match(/```draft\s*([\s\S]*?)\s*```/i)
+  if (!match) return content
+  if (content.length < 1800) return content
+  const draftBody = match[1].trim()
+  const headings = draftBody.match(/^##\s*Version\s*(\d+)/gim)
+  const versionText = headings
+    ? headings.map((h) => h.match(/(\d+)/)?.[1]).filter(Boolean).join(', ')
+    : 'none'
+  return `[previous draft omitted for context]\nversions: ${versionText}\ndraft_chars: ${draftBody.length}`
+}
+
 function positiveIntFromEnv(name: string, fallback: number): number {
   const raw = process.env[name]
   if (!raw) return fallback
@@ -58,7 +75,10 @@ export async function GET(request: NextRequest, ctx: { params: Promise<{ id: str
   const productRow = productRows[0]
   if (!productRow) return NextResponse.json({ error: 'Product not found' }, { status: 404 })
 
-  const skill = String(threadContext.skill || 'ugc_video_scripts')
+  const skills = Array.isArray(threadContext.skills) && threadContext.skills.length > 0
+    ? threadContext.skills.map(String)
+    : null
+  const skill = String(threadContext.skill || (skills ? skills[0] : 'ugc_video_scripts'))
   const versions = Math.min(6, Math.max(1, Number(threadContext.versions || 1)))
 
   const avatarIds = Array.isArray(threadContext.avatar_ids) ? threadContext.avatar_ids : []
@@ -114,9 +134,10 @@ export async function GET(request: NextRequest, ctx: { params: Promise<{ id: str
     })
   }
 
-  const blocks = await loadGlobalPromptBlocks()
+  const blocks = await loadGlobalPromptBlocks(user.id)
   const systemBuild = buildSystemPrompt({
     skill,
+    skills: skills || undefined,
     versions,
     product: {
       name: productRow.name,
@@ -142,8 +163,17 @@ export async function GET(request: NextRequest, ctx: { params: Promise<{ id: str
       ORDER BY created_at DESC
       LIMIT ${AGENT_HISTORY_LIMIT}
     `
+    // Apply the same draft summarization the chat route uses so the preview
+    // matches what the AI actually sees (large ```draft blocks get replaced
+    // with a short placeholder to save context budget).
+    const contextHistoryRows = (
+      (historyRows as Array<{ role: string; content: string }>).reverse()
+    ).map((row) => {
+      if (row.role !== 'assistant') return row
+      return { ...row, content: summarizeDraftForPreview(String(row.content || '')) }
+    })
     const contextWindow = buildAgentContextMessages(
-      (historyRows as Array<{ role: string; content: string }>).reverse(),
+      contextHistoryRows,
       {
         maxMessages: CONTEXT_MAX_MESSAGES,
         maxChars: CONTEXT_MAX_CHARS,

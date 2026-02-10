@@ -9,6 +9,7 @@ export type ThreadContext = {
   positioning_id?: string | null
   active_swipe_id?: string | null
   research_ids?: string[]
+  disable_writing_rules?: boolean
 }
 
 export type PromptBlockRow = {
@@ -210,8 +211,9 @@ export function buildSystemPrompt(args: {
   } | null
   research?: Array<{ id: string; title?: string | null; summary?: string | null; content?: string | null }>
   blocks: Map<string, PromptBlockRow>
+  disableWritingRules?: boolean
 }): BuiltSystemPrompt {
-  const { skill, skills, versions, preferredVersions, product, avatars, positioning, swipe, blocks } = args
+  const { skill, skills, versions, preferredVersions, product, avatars, positioning, swipe, blocks, disableWritingRules } = args
 
   // Resolve all selected skills (multi-skill support, fallback to single skill)
   const activeSkills = skills && skills.length > 0 ? skills : [skill]
@@ -259,7 +261,7 @@ export function buildSystemPrompt(args: {
   for (const src of skillSources) {
     if (src.content) pushSection(`skill_guidance_${src.key}`, `## SKILL GUIDANCE: ${src.key}\n${src.content}`)
   }
-  if (writingRules) pushSection('writing_rules', `## WRITING RULES\n${writingRules}`)
+  if (writingRules && !disableWritingRules) pushSection('writing_rules', `## WRITING RULES\n${writingRules}`)
 
   // Inject custom rules (type=global_rules, excluding writing_rules)
   for (const [key, block] of blocks.entries()) {

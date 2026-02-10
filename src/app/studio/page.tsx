@@ -22,6 +22,7 @@ type ThreadContext = {
   positioning_id?: string | null
   active_swipe_id?: string | null
   research_ids?: string[]
+  disable_writing_rules?: boolean
 }
 
 type SwipeRow = {
@@ -1075,17 +1076,19 @@ export default function GeneratePage() {
         body: JSON.stringify({
           context: {
             skill,
+            skills: selectedSkills,
             versions,
             avatar_ids: avatarIds,
             positioning_id: positioningId,
             active_swipe_id: activeSwipeId,
             research_ids: researchIds,
+            disable_writing_rules: threadContext.disable_writing_rules || false,
           },
         }),
       })
     }, 450)
     return () => clearTimeout(handle)
-  }, [threadId, skill, versions, avatarIds, positioningId, activeSwipeId, researchIds])
+  }, [threadId, skill, selectedSkills, versions, avatarIds, positioningId, activeSwipeId, researchIds, threadContext.disable_writing_rules])
 
   // Auto-save draft content
   useEffect(() => {
@@ -1154,7 +1157,7 @@ export default function GeneratePage() {
 
   const refreshSkills = useCallback(async () => {
     try {
-      const res = await fetch('/api/prompt-blocks?type=feature_template&scope=global&active_only=true')
+      const res = await fetch('/api/prompt-blocks?type=feature_template&scope=global&active_only=true&user_override=true')
       if (!res.ok) throw new Error('Failed to load skills')
       const data = await res.json()
       const mapped = (Array.isArray(data) ? data : [])
@@ -1491,6 +1494,37 @@ export default function GeneratePage() {
         </div>
 
         <div>
+          <label className="flex items-center justify-between cursor-pointer group">
+            <span className="text-[10px] uppercase tracking-[0.28em] text-[var(--editor-ink-muted)]">
+              Writing Rules
+            </span>
+            <button
+              type="button"
+              onClick={() => setThreadContext((prev) => ({
+                ...prev,
+                disable_writing_rules: !prev.disable_writing_rules,
+              }))}
+              className={`relative w-8 h-[18px] rounded-full transition-colors ${
+                threadContext.disable_writing_rules
+                  ? 'bg-[var(--editor-border)]'
+                  : 'bg-[var(--editor-accent)]'
+              }`}
+            >
+              <span
+                className={`absolute top-[2px] left-[2px] w-[14px] h-[14px] rounded-full bg-white transition-transform ${
+                  threadContext.disable_writing_rules ? '' : 'translate-x-[14px]'
+                }`}
+              />
+            </button>
+          </label>
+          {threadContext.disable_writing_rules && (
+            <p className="text-[10px] text-[var(--editor-ink-muted)] mt-1">
+              Global writing rules excluded from prompt
+            </p>
+          )}
+        </div>
+
+        <div>
           <p className="text-[10px] uppercase tracking-[0.28em] text-[var(--editor-ink-muted)] mb-2">
             Avatars
           </p>
@@ -1719,6 +1753,7 @@ export default function GeneratePage() {
     researchIds,
     saveCustomSkill,
     resetSkillBuilder,
+    threadContext.disable_writing_rules,
   ])
 
   function clearSelection() {

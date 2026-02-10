@@ -150,6 +150,7 @@ export async function GET(request: NextRequest, ctx: { params: Promise<{ id: str
     swipe,
     research,
     blocks,
+    disableWritingRules: Boolean(threadContext.disable_writing_rules),
   })
   const system = systemBuild.prompt
 

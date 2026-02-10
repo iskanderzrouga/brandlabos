@@ -875,6 +875,7 @@ export async function POST(request: NextRequest) {
       swipe,
       research,
       blocks,
+      disableWritingRules: Boolean(threadContext.disable_writing_rules),
     })
 
     const historyRows = await sql`

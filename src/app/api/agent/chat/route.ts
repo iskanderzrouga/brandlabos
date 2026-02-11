@@ -1244,11 +1244,30 @@ export async function POST(request: NextRequest) {
       assistantText = draftEnvelope.text
 
       const persistStartedAt = Date.now()
-      await sql`
-        INSERT INTO agent_messages (thread_id, role, content)
-        VALUES (${threadId}, 'assistant', ${assistantText})
-      `
-      const persistMs = Date.now() - persistStartedAt
+      let persistMs = 0
+      try {
+        await sql`
+          INSERT INTO agent_messages (thread_id, role, content)
+          VALUES (${threadId}, 'assistant', ${assistantText})
+        `
+        persistMs = Date.now() - persistStartedAt
+      } catch (persistError) {
+        persistMs = Date.now() - persistStartedAt
+        console.error('agent_message_persist_failed', {
+          request_id: requestId,
+          thread_id: threadId,
+          persist_ms: persistMs,
+          content_length: assistantText.length,
+          error: persistError instanceof Error ? persistError.message : String(persistError),
+        })
+        // Retry once
+        try {
+          await sql`
+            INSERT INTO agent_messages (thread_id, role, content)
+            VALUES (${threadId}, 'assistant', ${assistantText})
+          `
+        } catch { /* second attempt failed — message lost */ }
+      }
 
       const runtime = {
         ...baseMeta,

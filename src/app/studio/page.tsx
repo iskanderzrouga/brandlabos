@@ -2817,9 +2817,12 @@ export default function GeneratePage() {
                     const isUser = m.role === 'user'
                     const isTool = m.role === 'tool'
                     const messageKey = m.id || `${idx}`
-                    const draftParts = m.role === 'assistant' ? splitDraftMessage(m.content) : { before: m.content, draft: null, after: '' }
-                    if (m.role === 'assistant' && draftParts.draft && !draftParts.before && !draftParts.after) {
-                      draftParts.before = 'Draft applied to canvas.'
+                    const rawContent = m.content || ''
+                    const draftParts = m.role === 'assistant' ? splitDraftMessage(rawContent) : { before: rawContent, draft: null, after: '' }
+                    // On reload, pure ```draft messages have no visible before/after text.
+                    // Show a status line so assistant bubbles aren't invisible.
+                    if (m.role === 'assistant' && !draftParts.before.trim() && !draftParts.after.trim()) {
+                      draftParts.before = draftParts.draft ? 'Draft applied to canvas.' : (rawContent.trim() ? rawContent : '')
                     }
                     const draft = draftParts.draft
                     const draftVersionCount = draft ? countDraftVersionHeadings(draft) : 0

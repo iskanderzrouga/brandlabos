@@ -52,7 +52,7 @@ function boolFromEnv(name: string, fallback: boolean): boolean {
 const AGENT_MODEL = 'claude-opus-4-6'
 const AGENT_MAX_STEPS = positiveIntFromEnv('AGENT_MAX_STEPS', 3)
 const AGENT_TEXT_MAX_STEPS = positiveIntFromEnv('AGENT_TEXT_MAX_STEPS', 3)
-const AGENT_MAX_TOKENS = positiveIntFromEnv('AGENT_MAX_TOKENS', 2200)
+const AGENT_MAX_TOKENS = positiveIntFromEnv('AGENT_MAX_TOKENS', 16000)
 const AGENT_LOOP_BUDGET_MS = positiveIntFromEnv('AGENT_LOOP_BUDGET_MS', 90_000)
 const AGENT_HISTORY_LIMIT = positiveIntFromEnv('AGENT_HISTORY_LIMIT', 120)
 
@@ -1074,7 +1074,7 @@ export async function POST(request: NextRequest) {
     const activeTools =
       compactMode ? undefined : shouldEnableTools(messageText, threadContext) ? tools : undefined
     const maxSteps = activeTools ? AGENT_MAX_STEPS : AGENT_TEXT_MAX_STEPS
-    const maxTokens = compactMode ? Math.min(AGENT_MAX_TOKENS, 1400) : AGENT_MAX_TOKENS
+    const maxTokens = compactMode ? Math.min(AGENT_MAX_TOKENS, 4000) : AGENT_MAX_TOKENS
 
     const baseMeta = {
       request_id: requestId,

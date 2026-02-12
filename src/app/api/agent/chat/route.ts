@@ -1260,13 +1260,6 @@ export async function POST(request: NextRequest) {
           content_length: assistantText.length,
           error: persistError instanceof Error ? persistError.message : String(persistError),
         })
-        // Retry once
-        try {
-          await sql`
-            INSERT INTO agent_messages (thread_id, role, content)
-            VALUES (${threadId}, 'assistant', ${assistantText})
-          `
-        } catch (_retryErr) { /* second attempt failed — message lost */ }
       }
 
       const runtime = {

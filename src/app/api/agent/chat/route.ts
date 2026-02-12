@@ -1266,7 +1266,7 @@ export async function POST(request: NextRequest) {
             INSERT INTO agent_messages (thread_id, role, content)
             VALUES (${threadId}, 'assistant', ${assistantText})
           `
-        } catch { /* second attempt failed — message lost */ }
+        } catch (_retryErr) { /* second attempt failed — message lost */ }
       }
 
       const runtime = {
